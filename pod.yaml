@@ -1,1 +1,90 @@
+---
+- name: Deploy Apache HTTP Server (Catalog Template) via AAP
+  hosts: localhost
+  connection: local
+  gather_facts: no
 
+  tasks:
+    ############################################################
+    # Step 1: Process Apache HTTP Server template
+    ############################################################
+    - name: Process Apache HTTP Server template
+      community.okd.openshift_process:
+        namespace: "{{ openshift_namespace }}"
+        template: httpd-example
+        parameters:
+          NAME: "{{ app_name }}"
+          NAMESPACE: "{{ openshift_namespace }}"
+          HTTPD_VERSION: "{{ httpd_version }}"
+          MEMORY_LIMIT: "{{ memory_limit }}"
+          SOURCE_REPOSITORY_URL: "{{ git_repo_url }}"
+      register: apache_template
+
+    ############################################################
+    # Step 2: Create Deployment / Service / Pod
+    ############################################################
+    - name: Create Apache HTTP Server resources
+      community.okd.k8s:
+        state: present
+        namespace: "{{ openshift_namespace }}"
+        definition: "{{ item }}"
+      loop: "{{ apache_template.resources }}"
+
+    ############################################################
+    # Step 3: Create Route (Ingress)
+    ############################################################
+    - name: Create Route for Apache HTTP Server
+      community.okd.k8s:
+        state: present
+        namespace: "{{ openshift_namespace }}"
+        definition:
+          apiVersion: route.openshift.io/v1
+          kind: Route
+          metadata:
+            name: "{{ app_name }}"
+          spec:
+            host: "{{ route_host }}"
+            to:
+              kind: Service
+              name: "{{ app_name }}"
+            port:
+              targetPort: "{{ app_port }}"
+            tls:
+              termination: edge
+
+    ############################################################
+    # Step 4: NetworkPolicy (Ingress + Egress)
+    ############################################################
+    - name: Apply NetworkPolicy for Apache HTTP Server
+      community.okd.k8s:
+        state: present
+        namespace: "{{ openshift_namespace }}"
+        definition:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: "{{ app_name }}-network-policy"
+          spec:
+            podSelector:
+              matchLabels:
+                app: "{{ app_name }}"
+            policyTypes:
+              - Ingress
+              - Egress
+
+            ingress:
+              - from:
+                  - namespaceSelector:
+                      matchLabels:
+                        kubernetes.io/metadata.name: "{{ ingress_namespace }}"
+                ports:
+                  - protocol: TCP
+                    port: "{{ app_port }}"
+
+            egress:
+              - to:
+                  - ipBlock:
+                      cidr: "{{ egress_cidr }}"
+                ports:
+                  - protocol: TCP
+                    port: "{{ egress_port }}"
