@@ -4,6 +4,16 @@
   connection: local
   gather_facts: no
 
+  vars:
+    ############################################################
+    # HARDCODED NETWORK VALUES (NO SURVEY)
+    ############################################################
+    route_host: "httpd.apps.pgrhoso.dccloud.com"
+    app_port: 8080
+    ingress_namespace: "openshift-ingress"
+    egress_cidr: "0.0.0.0/0"
+    egress_port: 443
+
   tasks:
     ############################################################
     # Step 1: Process Apache HTTP Server template
