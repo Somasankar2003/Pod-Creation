@@ -1,26 +1,26 @@
 ---
-- name: Deploy Apache HTTP Server (Catalog Template) via AAP
+- name: Deploy Apache HTTP Server via AAP (Generic & Secure)
   hosts: localhost
   connection: local
   gather_facts: no
 
   vars:
-    ############################################################
-    # HARDCODED NETWORK VALUES
-    ############################################################
-    route_host: "httpd.apps.pgrhoso.dccloud.com"
+    # -------------------------------
+    # Network / Route configuration
+    # -------------------------------
+    route_host: "{{ app_name }}.apps.pgrhoso.dccloud.com"
     app_port: 8080
-    ingress_namespace: "openshift-ingress"
+    ingress_namespace: openshift-ingress
 
   tasks:
     ############################################################
-    # Step 1: Process Apache HTTP Server template
+    # 1️⃣ Process OpenShift Template (GENERIC)
     ############################################################
-    - name: Process Apache HTTP Server template
+    - name: Process Apache HTTPD template
       community.okd.openshift_process:
-        name: httpd-example
-        namespace: "{{ image_namespace }}"          # template namespace (openshift)
-        namespace_target: "{{ runtime_namespace }}" # app runtime namespace
+        name: "{{ app_name }}"
+        namespace: "{{ image_namespace }}"          # where template exists
+        namespace_target: "{{ runtime_namespace }}" # where app is created
         parameters:
           NAME: "{{ app_name }}"
           NAMESPACE: "{{ image_namespace }}"
@@ -30,9 +30,9 @@
       register: apache_template
 
     ############################################################
-    # Step 2: Create Deployment / Service / Pod
+    # 2️⃣ Create all generated resources
     ############################################################
-    - name: Create Apache HTTP Server resources
+    - name: Apply generated OpenShift resources
       community.okd.k8s:
         state: present
         namespace: "{{ runtime_namespace }}"
@@ -40,9 +40,9 @@
       loop: "{{ apache_template.resources }}"
 
     ############################################################
-    # Step 3: Create Route (Ingress)
+    # 3️⃣ Create Route (Ingress)
     ############################################################
-    - name: Create Route
+    - name: Create OpenShift Route
       community.okd.k8s:
         state: present
         namespace: "{{ runtime_namespace }}"
@@ -62,10 +62,9 @@
               termination: edge
 
     ############################################################
-    # Step 4: NetworkPolicy
-   
+    # 4️⃣ NetworkPolicy – DEFAULT DENY (INGRESS + EGRESS)
     ############################################################
-    - name: Apply NetworkPolicy (Ingress allow, Egress deny)
+    - name: Apply default deny NetworkPolicy (label independent)
       community.okd.k8s:
         state: present
         namespace: "{{ runtime_namespace }}"
@@ -73,11 +72,9 @@
           apiVersion: networking.k8s.io/v1
           kind: NetworkPolicy
           metadata:
-            name: "{{ app_name }}-network-policy"
+            name: "{{ app_name }}-default-deny"
           spec:
-            podSelector:
-              matchLabels:
-                app: "{{ app_name }}"
+            podSelector: {}     # 🔑 applies to ALL pods
             policyTypes:
               - Ingress
               - Egress
@@ -92,5 +89,5 @@
                   - protocol: TCP
                     port: "{{ app_port }}"
 
-            # 🚫 NO EGRESS RULES = BLOCK ALL OUTBOUND TRAFFIC
-            # (THIS IS THE FIX YOU ASKED FOR)
+            # ❌ BLOCK ALL EGRESS
+            egress: []
