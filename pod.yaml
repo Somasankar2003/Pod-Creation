@@ -21,7 +21,8 @@
     - name: Process Apache HTTP Server template
       community.okd.openshift_process:
         name: httpd-example
-        namespace: "{{ runtime_namespace }}"
+        namespace: "{{ image_namespace }}"        # where template exists
+        namespace_target: "{{ runtime_namespace }}" # where objects are created
         parameters:
           NAME: "{{ app_name }}"
           NAMESPACE: "{{ image_namespace }}"
