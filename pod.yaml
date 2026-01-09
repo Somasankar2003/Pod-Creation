@@ -11,8 +11,6 @@
     route_host: "httpd.apps.pgrhoso.dccloud.com"
     app_port: 8080
     ingress_namespace: "openshift-ingress"
-    egress_cidr: "0.0.0.0/0"
-    egress_port: 443
 
   tasks:
     ############################################################
@@ -21,8 +19,8 @@
     - name: Process Apache HTTP Server template
       community.okd.openshift_process:
         name: httpd-example
-        namespace: "{{ image_namespace }}"        # where template exists
-        namespace_target: "{{ runtime_namespace }}" # where objects are created
+        namespace: "{{ image_namespace }}"          # template namespace (openshift)
+        namespace_target: "{{ runtime_namespace }}" # app runtime namespace
         parameters:
           NAME: "{{ app_name }}"
           NAMESPACE: "{{ image_namespace }}"
@@ -64,9 +62,10 @@
               termination: edge
 
     ############################################################
-    # Step 4: NetworkPolicy (Ingress + Egress)
+    # Step 4: NetworkPolicy
+   
     ############################################################
-    - name: Apply NetworkPolicy
+    - name: Apply NetworkPolicy (Ingress allow, Egress deny)
       community.okd.k8s:
         state: present
         namespace: "{{ runtime_namespace }}"
@@ -83,6 +82,7 @@
               - Ingress
               - Egress
 
+            # ✅ Allow ingress ONLY from OpenShift router
             ingress:
               - from:
                   - namespaceSelector:
@@ -92,10 +92,5 @@
                   - protocol: TCP
                     port: "{{ app_port }}"
 
-            egress:
-              - to:
-                  - ipBlock:
-                      cidr: "{{ egress_cidr }}"
-                ports:
-                  - protocol: TCP
-                    port: "{{ egress_port }}"
+            # 🚫 NO EGRESS RULES = BLOCK ALL OUTBOUND TRAFFIC
+            # (THIS IS THE FIX YOU ASKED FOR)
