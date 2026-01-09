@@ -1,38 +1,44 @@
 ---
-- name: Deploy Apache HTTP Server via AAP (Generic & Secure)
+- name: Deploy Apache HTTP Server via AAP (Ingress Allowed, Internet Blocked)
   hosts: localhost
   connection: local
   gather_facts: no
 
   vars:
-    # -------------------------------
-    # Network / Route configuration
-    # -------------------------------
+    ############################################################
+    # FIXED TEMPLATE DETAILS
+    ############################################################
+    template_name: httpd-example
+    template_namespace: openshift
+
+    ############################################################
+    # NETWORK SETTINGS
+    ############################################################
     route_host: "{{ app_name }}.apps.pgrhoso.dccloud.com"
     app_port: 8080
     ingress_namespace: openshift-ingress
 
   tasks:
     ############################################################
-    # 1️⃣ Process OpenShift Template (GENERIC)
+    # 1️⃣ Process Apache HTTPD OpenShift Template
     ############################################################
     - name: Process Apache HTTPD template
       community.okd.openshift_process:
-        name: "{{ app_name }}"
-        namespace: "{{ image_namespace }}"          # where template exists
-        namespace_target: "{{ runtime_namespace }}" # where app is created
+        name: "{{ template_name }}"
+        namespace: "{{ template_namespace }}"
+        namespace_target: "{{ runtime_namespace }}"
         parameters:
           NAME: "{{ app_name }}"
-          NAMESPACE: "{{ image_namespace }}"
+          NAMESPACE: "{{ template_namespace }}"
           HTTPD_VERSION: "{{ httpd_version }}"
           MEMORY_LIMIT: "{{ memory_limit }}"
           SOURCE_REPOSITORY_URL: "{{ git_repo_url }}"
       register: apache_template
 
     ############################################################
-    # 2️⃣ Create all generated resources
+    # 2️⃣ Apply Generated Resources
     ############################################################
-    - name: Apply generated OpenShift resources
+    - name: Create application resources
       community.okd.k8s:
         state: present
         namespace: "{{ runtime_namespace }}"
@@ -62,9 +68,9 @@
               termination: edge
 
     ############################################################
-    # 4️⃣ NetworkPolicy – DEFAULT DENY (INGRESS + EGRESS)
+    # 4️⃣ NetworkPolicy – INGRESS OK, INTERNET BLOCKED
     ############################################################
-    - name: Apply default deny NetworkPolicy (label independent)
+    - name: Apply NetworkPolicy (Block Internet, Allow Internal Only)
       community.okd.k8s:
         state: present
         namespace: "{{ runtime_namespace }}"
@@ -72,14 +78,17 @@
           apiVersion: networking.k8s.io/v1
           kind: NetworkPolicy
           metadata:
-            name: "{{ app_name }}-default-deny"
+            name: "{{ app_name }}-network-policy"
           spec:
-            podSelector: {}     # 🔑 applies to ALL pods
+            podSelector: {}     # applies to ALL pods (no label dependency)
+
             policyTypes:
               - Ingress
               - Egress
 
-            # ✅ Allow ingress ONLY from OpenShift router
+            ####################################################
+            # INGRESS: Allow only OpenShift Router
+            ####################################################
             ingress:
               - from:
                   - namespaceSelector:
@@ -89,5 +98,15 @@
                   - protocol: TCP
                     port: "{{ app_port }}"
 
-            # ❌ BLOCK ALL EGRESS
-            egress: []
+            ####################################################
+            # EGRESS: Allow ONLY internal/private networks
+            # Internet (public IPs) is BLOCKED
+            ####################################################
+            egress:
+              - to:
+                  - ipBlock:
+                      cidr: 10.0.0.0/8
+                  - ipBlock:
+                      cidr: 172.16.0.0/12
+                  - ipBlock:
+                      cidr: 192.168.0.0/16
