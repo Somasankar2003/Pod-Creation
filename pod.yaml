@@ -10,11 +10,11 @@
     ############################################################
     - name: Process Apache HTTP Server template
       community.okd.openshift_process:
-        namespace: "{{ openshift_namespace }}"
+        namespace: "{{ runtime_namespace }}"
         template: httpd-example
         parameters:
           NAME: "{{ app_name }}"
-          NAMESPACE: "{{ openshift_namespace }}"
+          NAMESPACE: "{{ image_namespace }}"
           HTTPD_VERSION: "{{ httpd_version }}"
           MEMORY_LIMIT: "{{ memory_limit }}"
           SOURCE_REPOSITORY_URL: "{{ git_repo_url }}"
@@ -26,17 +26,17 @@
     - name: Create Apache HTTP Server resources
       community.okd.k8s:
         state: present
-        namespace: "{{ openshift_namespace }}"
+        namespace: "{{ runtime_namespace }}"
         definition: "{{ item }}"
       loop: "{{ apache_template.resources }}"
 
     ############################################################
     # Step 3: Create Route (Ingress)
     ############################################################
-    - name: Create Route for Apache HTTP Server
+    - name: Create Route
       community.okd.k8s:
         state: present
-        namespace: "{{ openshift_namespace }}"
+        namespace: "{{ runtime_namespace }}"
         definition:
           apiVersion: route.openshift.io/v1
           kind: Route
@@ -55,10 +55,10 @@
     ############################################################
     # Step 4: NetworkPolicy (Ingress + Egress)
     ############################################################
-    - name: Apply NetworkPolicy for Apache HTTP Server
+    - name: Apply NetworkPolicy
       community.okd.k8s:
         state: present
-        namespace: "{{ openshift_namespace }}"
+        namespace: "{{ runtime_namespace }}"
         definition:
           apiVersion: networking.k8s.io/v1
           kind: NetworkPolicy
