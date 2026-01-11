@@ -126,16 +126,17 @@
     # 5️⃣ FORCE POD RESTART (AAP SAFE)
     ############################################################
     - name: Restart deployment to create new pod
-      community.okd.k8s:
-        state: present
-        namespace: "{{ runtime_namespace }}"
-        definition:
-          apiVersion: apps/v1
-          kind: Deployment
-          metadata:
-            name: "{{ app_name }}"
-          spec:
-            template:
-              metadata:
-                annotations:
-                  restartedAt: "{{ lookup('pipe', 'date +%s') }}"
+    kubernetes.core.k8s:
+      state: patched
+      api_version: apps/v1
+      kind: Deployment
+      name: "{{ app_name }}"
+      namespace: "{{ runtime_namespace }}"
+      merge_type: strategic-merge
+      definition:
+        spec:
+          template:
+            metadata:
+              annotations:
+                restartedAt: "{{ lookup('pipe', 'date +%s') }}"
+
