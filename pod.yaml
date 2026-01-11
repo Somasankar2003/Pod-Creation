@@ -6,21 +6,31 @@
 
   vars:
     ############################################################
-    # FIXED TEMPLATE DETAILS
+    # TEMPLATE DETAILS (FIXED)
     ############################################################
     template_name: httpd-example
     template_namespace: openshift
 
     ############################################################
+    # APPLICATION SETTINGS (SURVEY)
+    ############################################################
+    app_name: "{{ app_name }}"
+    runtime_namespace: "{{ runtime_namespace }}"
+    httpd_version: "{{ httpd_version }}"
+    memory_limit: "{{ memory_limit }}"
+    git_repo_url: "{{ git_repo_url }}"
+
+    ############################################################
     # NETWORK SETTINGS
     ############################################################
-    route_host: "{{ app_name }}.apps.pgrhoso.dccloud.com"
     app_port: 8080
     ingress_namespace: openshift-ingress
+    route_host: "{{ app_name }}.apps.pgrhoso.dccloud.com"
 
   tasks:
+
     ############################################################
-    # 1️⃣ Process Apache HTTPD OpenShift Template
+    # 1️⃣ Process OpenShift Apache Template
     ############################################################
     - name: Process Apache HTTPD template
       community.okd.openshift_process:
@@ -68,9 +78,9 @@
               termination: edge
 
     ############################################################
-    # 4️⃣ NetworkPolicy – INGRESS OK, INTERNET BLOCKED
+    # 4️⃣ NetworkPolicy – Allow Ingress, Block Internet
     ############################################################
-    - name: Apply NetworkPolicy (Block Internet, Allow Internal Only)
+    - name: Apply NetworkPolicy (Ingress OK, Internet Blocked)
       community.okd.k8s:
         state: present
         namespace: "{{ runtime_namespace }}"
@@ -78,16 +88,15 @@
           apiVersion: networking.k8s.io/v1
           kind: NetworkPolicy
           metadata:
-            name: "{{ app_name }}-network-policy"
+            name: "{{ app_name }}-deny-internet"
           spec:
-            podSelector: {}     # applies to ALL pods (no label dependency)
-
+            podSelector: {}   # applies to ALL pods in namespace
             policyTypes:
               - Ingress
               - Egress
 
             ####################################################
-            # INGRESS: Allow only OpenShift Router
+            # INGRESS: Only OpenShift Router
             ####################################################
             ingress:
               - from:
@@ -99,11 +108,33 @@
                     port: "{{ app_port }}"
 
             ####################################################
-            # EGRESS: Allow ONLY internal/private networks
-            # Internet (public IPs) is BLOCKED
+            # EGRESS: ONLY internal/private networks
+            # Internet is BLOCKED
             ####################################################
             egress:
               - to:
                   - ipBlock:
-                      cidr: 0.0.0.0/24
-                 
+                      cidr: 10.0.0.0/8
+              - to:
+                  - ipBlock:
+                      cidr: 172.16.0.0/12
+              - to:
+                  - ipBlock:
+                      cidr: 192.168.0.0/16
+
+    ############################################################
+    # 5️⃣ FORCE NEW POD (IMPORTANT)
+    ############################################################
+    - name: Restart deployment to create new pod
+      community.okd.k8s:
+        state: present
+        api_version: apps/v1
+        kind: Deployment
+        name: "{{ app_name }}"
+        namespace: "{{ runtime_namespace }}"
+        definition:
+          spec:
+            template:
+              metadata:
+                annotations:
+                  restartedAt: "{{ ansible_date_time.iso8601 }}"
