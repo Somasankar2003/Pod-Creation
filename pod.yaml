@@ -6,13 +6,13 @@
 
   vars:
     ############################################################
-    # TEMPLATE DETAILS (FIXED)
+    # TEMPLATE DETAILS
     ############################################################
     template_name: httpd-example
     template_namespace: openshift
 
     ############################################################
-    # APPLICATION SETTINGS (SURVEY)
+    # APPLICATION (FROM SURVEY)
     ############################################################
     app_name: "{{ app_name }}"
     runtime_namespace: "{{ runtime_namespace }}"
@@ -30,7 +30,7 @@
   tasks:
 
     ############################################################
-    # 1️⃣ Process OpenShift Apache Template
+    # 1️⃣ Process OpenShift Apache HTTPD Template
     ############################################################
     - name: Process Apache HTTPD template
       community.okd.openshift_process:
@@ -80,7 +80,7 @@
     ############################################################
     # 4️⃣ NetworkPolicy – Allow Ingress, Block Internet
     ############################################################
-    - name: Apply NetworkPolicy (Ingress OK, Internet Blocked)
+    - name: Apply NetworkPolicy (Block Internet)
       community.okd.k8s:
         state: present
         namespace: "{{ runtime_namespace }}"
@@ -96,7 +96,7 @@
               - Egress
 
             ####################################################
-            # INGRESS: Only OpenShift Router
+            # INGRESS: Allow only OpenShift Router
             ####################################################
             ingress:
               - from:
@@ -108,7 +108,7 @@
                     port: "{{ app_port }}"
 
             ####################################################
-            # EGRESS: ONLY internal/private networks
+            # EGRESS: Allow ONLY private/internal networks
             # Internet is BLOCKED
             ####################################################
             egress:
@@ -123,18 +123,19 @@
                       cidr: 192.168.0.0/16
 
     ############################################################
-    # 5️⃣ FORCE NEW POD (IMPORTANT)
+    # 5️⃣ FORCE POD RESTART (AAP SAFE)
     ############################################################
     - name: Restart deployment to create new pod
       community.okd.k8s:
         state: present
-        api_version: apps/v1
-        kind: Deployment
-        name: "{{ app_name }}"
         namespace: "{{ runtime_namespace }}"
         definition:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: "{{ app_name }}"
           spec:
             template:
               metadata:
                 annotations:
-                  restartedAt: "{{ ansible_date_time.iso8601 }}"
+                  restartedAt: "{{ lookup('pipe', 'date +%s') }}"
