@@ -5,7 +5,7 @@
   gather_facts: no
 
   ############################################################
-  # SURVEY VARIABLES (ALL SINGLE-LINE STRINGS)
+  # SURVEY VARIABLES (ALL STRINGS – PASTE SAFE)
   ############################################################
   vars:
     app_name: "{{ app_name }}"
@@ -15,10 +15,10 @@
     git_repo_url: "{{ git_repo_url }}"
 
     # Network survey inputs (CSV / STRING)
-    ingress_cidrs: "{{ ingress_cidrs }}"       # e.g. 0.0.0.0/0
-    ingress_ports: "{{ ingress_ports }}"       # e.g. TCP:8080
-    egress_cidrs: "{{ egress_cidrs }}"         # e.g. 0.0.0.0/0
-    egress_ports: "{{ egress_ports }}"         # e.g. UDP:53,TCP:53,TCP:443
+    ingress_cidrs: "{{ ingress_cidrs }}"     # e.g. 0.0.0.0/0
+    ingress_ports: "{{ ingress_ports }}"     # e.g. TCP:8080 or TCP: 8080
+    egress_cidrs: "{{ egress_cidrs }}"       # e.g. 0.0.0.0/0
+    egress_ports: "{{ egress_ports }}"       # e.g. UDP:53, TCP:53, TCP:443
 
     ############################################################
     # TEMPLATE DETAILS
@@ -83,24 +83,30 @@
               termination: edge
 
     ############################################################
-    # 4️⃣ PARSE SURVEY INPUTS (SAFE, NO YAML)
+    # 4️⃣ PARSE SURVEY INPUTS (SPACE-TOLERANT)
     ############################################################
-    - name: Parse ingress ports
+    - name: Parse ingress ports (safe)
       set_fact:
         ingress_ports_parsed: >-
           {{
             ingress_ports.split(',')
-            | map('regex_replace', '^([^:]+):(.*)$', '{"protocol":"\\1","port":\\2}')
+            | map('trim')
+            | map('regex_replace',
+                  '^([^: ]+) *: *([0-9]+)$',
+                  '{"protocol":"\\1","port":\\2}')
             | map('from_yaml')
             | list
           }}
 
-    - name: Parse egress ports
+    - name: Parse egress ports (safe)
       set_fact:
         egress_ports_parsed: >-
           {{
             egress_ports.split(',')
-            | map('regex_replace', '^([^:]+):(.*)$', '{"protocol":"\\1","port":\\2}')
+            | map('trim')
+            | map('regex_replace',
+                  '^([^: ]+) *: *([0-9]+)$',
+                  '{"protocol":"\\1","port":\\2}')
             | map('from_yaml')
             | list
           }}
@@ -110,7 +116,10 @@
         ingress_from_blocks: >-
           {{
             ingress_cidrs.split(',')
-            | map('regex_replace', '^(.*)$', '{"ipBlock":{"cidr":"\\1"}}')
+            | map('trim')
+            | map('regex_replace',
+                  '^(.*)$',
+                  '{"ipBlock":{"cidr":"\\1"}}')
             | map('from_yaml')
             | list
           }}
@@ -120,7 +129,10 @@
         egress_to_blocks: >-
           {{
             egress_cidrs.split(',')
-            | map('regex_replace', '^(.*)$', '{"ipBlock":{"cidr":"\\1"}}')
+            | map('trim')
+            | map('regex_replace',
+                  '^(.*)$',
+                  '{"ipBlock":{"cidr":"\\1"}}')
             | map('from_yaml')
             | list
           }}
