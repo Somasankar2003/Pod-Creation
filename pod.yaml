@@ -77,7 +77,7 @@
               termination: edge
 
     ############################################################
-    # 4️⃣ NETWORK POLICY – SURVEY DRIVEN (CORRECT)
+    # 4️⃣ NETWORK POLICY – SURVEY DRIVEN (FIXED INDENTATION)
     ############################################################
     - name: Apply NetworkPolicy (Survey Driven Ingress & Egress)
       community.okd.k8s:
@@ -105,20 +105,21 @@
             ####################################################
             ingress:
               - from:
-                  {% for cidr in ingress_cidrs | from_yaml %}
+{% for cidr in ingress_cidrs | from_yaml %}
                   - ipBlock:
                       cidr: {{ cidr }}
-                  {% endfor %}
+{% endfor %}
                 ports:
-                  {% for p in ingress_ports | from_yaml %}
+{% for p in ingress_ports | from_yaml %}
                   - protocol: {{ p.protocol }}
                     port: {{ p.port }}
-                  {% endfor %}
+{% endfor %}
 
             ####################################################
-            # EGRESS – DNS (MANDATORY)
+            # EGRESS
             ####################################################
             egress:
+              # DNS (MANDATORY)
               - to:
                   - namespaceSelector:
                       matchLabels:
@@ -129,19 +130,17 @@
                   - protocol: TCP
                     port: 53
 
-              ################################################
-              # EGRESS – FROM SURVEY
-              ################################################
+              # FROM SURVEY
               - to:
-                  {% for cidr in egress_cidrs | from_yaml %}
+{% for cidr in egress_cidrs | from_yaml %}
                   - ipBlock:
                       cidr: {{ cidr }}
-                  {% endfor %}
+{% endfor %}
                 ports:
-                  {% for p in egress_ports | from_yaml %}
+{% for p in egress_ports | from_yaml %}
                   - protocol: {{ p.protocol }}
                     port: {{ p.port }}
-                  {% endfor %}
+{% endfor %}
 
     ############################################################
     # 5️⃣ GUARANTEED NEW POD EVERY RUN
