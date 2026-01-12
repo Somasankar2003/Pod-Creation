@@ -4,21 +4,21 @@
   connection: local
   gather_facts: no
 
+  ############################################################
+  # SURVEY VARIABLES (AAP)
+  ############################################################
   vars:
-    ############################################################
-    # TEMPLATE DETAILS
-    ############################################################
-    template_name: httpd-example
-    template_namespace: openshift
-
-    ############################################################
-    # SURVEY VARIABLES
-    ############################################################
     app_name: "{{ app_name }}"
     runtime_namespace: "{{ runtime_namespace }}"
     httpd_version: "{{ httpd_version }}"
     memory_limit: "{{ memory_limit }}"
     git_repo_url: "{{ git_repo_url }}"
+
+    ############################################################
+    # TEMPLATE DETAILS
+    ############################################################
+    template_name: httpd-example
+    template_namespace: openshift
 
     ############################################################
     # NETWORK
@@ -56,7 +56,7 @@
       loop: "{{ apache_template.resources }}"
 
     ############################################################
-    # 3️⃣ CREATE ROUTE (INGRESS)
+    # 3️⃣ CREATE ROUTE
     ############################################################
     - name: Create OpenShift Route
       community.okd.k8s:
@@ -78,7 +78,7 @@
               termination: edge
 
     ############################################################
-    # 4️⃣ NETWORK POLICY – SURVEY DRIVEN
+    # 4️⃣ APPLY NETWORK POLICY (FIXED)
     ############################################################
     - name: Apply NetworkPolicy (Survey Driven Ingress & Egress)
       community.okd.k8s:
@@ -90,9 +90,6 @@
           metadata:
             name: "{{ app_name }}-network-policy"
           spec:
-            ####################################################
-            # APPLY ONLY TO APP PODS
-            ####################################################
             podSelector:
               matchLabels:
                 name: "{{ app_name }}"
@@ -102,31 +99,33 @@
               - Egress
 
             ####################################################
-            # INGRESS – FROM SURVEY
+            # INGRESS
             ####################################################
             ingress:
               - from: >
                   {{ ingress_cidrs
                      | from_yaml
-                     | map('community.general.dict_kv', 'ipBlock', 'cidr')
+                     | map('regex_replace', '^(.*)$', '{"ipBlock":{"cidr":"\\1"}}')
+                     | map('from_yaml')
                      | list }}
                 ports: "{{ ingress_ports | from_yaml }}"
 
             ####################################################
-            # EGRESS – FROM SURVEY
+            # EGRESS
             ####################################################
             egress:
               - to: >
                   {{ egress_cidrs
                      | from_yaml
-                     | map('community.general.dict_kv', 'ipBlock', 'cidr')
+                     | map('regex_replace', '^(.*)$', '{"ipBlock":{"cidr":"\\1"}}')
+                     | map('from_yaml')
                      | list }}
                 ports: "{{ egress_ports | from_yaml }}"
 
     ############################################################
-    # 5️⃣ GUARANTEED NEW POD EVERY RUN
+    # 5️⃣ FORCE NEW POD (ROLLING RESTART)
     ############################################################
-    - name: Force rollout restart (always creates new pod)
+    - name: Force rollout restart
       kubernetes.core.k8s:
         state: patched
         api_version: apps/v1
