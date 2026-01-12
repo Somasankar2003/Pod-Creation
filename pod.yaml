@@ -20,37 +20,27 @@
   tasks:
 
     ############################################################
-    # 0️⃣ BUILD NETWORK POLICY LISTS FROM SURVEY (CRITICAL FIX)
+    # 0️⃣ PARSE SURVEY INPUTS (CRITICAL FIX)
     ############################################################
-    - name: Build ingress ipBlock list
+    - name: Parse ingress CIDRs
       set_fact:
         ingress_from_blocks: >-
           {{
-            ingress_cidrs
-            | from_yaml
-            | map('community.general.dict_kv', 'cidr')
-            | map('combine', {'ipBlock': {}})
-            | map('combine', {'ipBlock': {'cidr': item.cidr}}, recursive=True)
+            ingress_cidrs | from_yaml
+            | map('regex_replace', '^(.*)$', '{"ipBlock": {"cidr": "\\1"}}')
+            | map('from_yaml')
             | list
           }}
-      loop: "{{ ingress_cidrs | from_yaml }}"
-      loop_control:
-        loop_var: item
 
-    - name: Build egress ipBlock list
+    - name: Parse egress CIDRs
       set_fact:
         egress_to_blocks: >-
           {{
-            egress_cidrs
-            | from_yaml
-            | map('community.general.dict_kv', 'cidr')
-            | map('combine', {'ipBlock': {}})
-            | map('combine', {'ipBlock': {'cidr': item.cidr}}, recursive=True)
+            egress_cidrs | from_yaml
+            | map('regex_replace', '^(.*)$', '{"ipBlock": {"cidr": "\\1"}}')
+            | map('from_yaml')
             | list
           }}
-      loop: "{{ egress_cidrs | from_yaml }}"
-      loop_control:
-        loop_var: item
 
     - name: Parse ingress ports
       set_fact:
@@ -87,7 +77,7 @@
       loop: "{{ apache_template.resources }}"
 
     ############################################################
-    # 3️⃣ CREATE ROUTE (INGRESS)
+    # 3️⃣ CREATE ROUTE
     ############################################################
     - name: Create OpenShift Route
       community.okd.k8s:
