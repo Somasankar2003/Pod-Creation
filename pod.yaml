@@ -1,5 +1,5 @@
 ---
-- name: Deploy Apache HTTP Server via AAP (Same App Name → New Pod Visible)
+- name: Deploy Apache HTTP Server via AAP (Ingress OK, Internet Restricted)
   hosts: localhost
   connection: local
   gather_facts: no
@@ -78,9 +78,9 @@
               termination: edge
 
     ############################################################
-    # 4️⃣ NETWORK POLICY – APP PODS ONLY
+    # 4️⃣ NETWORK POLICY – CORRECT & SECURE
     ############################################################
-    - name: Apply NetworkPolicy (Restrict Internet)
+    - name: Apply NetworkPolicy (DNS + GitHub ONLY)
       community.okd.k8s:
         state: present
         namespace: "{{ runtime_namespace }}"
@@ -99,7 +99,7 @@
               - Egress
 
             ####################################################
-            # INGRESS – OPENSHIFT ROUTER
+            # INGRESS – OpenShift Router ONLY
             ####################################################
             ingress:
               - from:
@@ -111,9 +111,10 @@
                     port: "{{ app_port }}"
 
             ####################################################
-            # EGRESS – DNS + HTTPS ONLY
+            # EGRESS – DNS + GITHUB ONLY
             ####################################################
             egress:
+              # DNS
               - to:
                   - ipBlock:
                       cidr: 0.0.0.0/0
@@ -123,17 +124,22 @@
                   - protocol: TCP
                     port: 53
 
+              # GitHub ONLY (no Google, no internet)
               - to:
                   - ipBlock:
-                      cidr: 0.0.0.0/0
+                      cidr: 140.82.0.0/16
+                  - ipBlock:
+                      cidr: 192.30.252.0/22
+                  - ipBlock:
+                      cidr: 185.199.108.0/22
                 ports:
                   - protocol: TCP
                     port: 443
 
     ############################################################
-    # 5️⃣ SCALE UP → FORCE NEW POD CREATION
+    # 5️⃣ SCALE DEPLOYMENT → NEW POD CREATED
     ############################################################
-    - name: Scale deployment to 2 replicas (create new pod)
+    - name: Scale deployment to create NEW pod
       kubernetes.core.k8s:
         state: patched
         api_version: apps/v1
@@ -143,19 +149,4 @@
         merge_type: strategic-merge
         definition:
           spec:
-            replicas: 20
-
-    ############################################################
-    # 6️⃣ SCALE BACK → KEEP ONLY NEW POD
-    ############################################################
-    - name: Scale deployment back to 1 replica
-      kubernetes.core.k8s:
-        state: patched
-        api_version: apps/v1
-        kind: Deployment
-        name: "{{ app_name }}"
-        namespace: "{{ runtime_namespace }}"
-        merge_type: strategic-merge
-        definition:
-          spec:
-            replicas: 10
+            replicas: 2
