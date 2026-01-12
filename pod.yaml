@@ -1,25 +1,28 @@
 ---
-- name: Deploy Apache HTTP Server via AAP (Secure Runtime, Internet Blocked)
+- name: Deploy Apache HTTP Server via AAP (Ingress Allowed, Internet Blocked)
   hosts: localhost
   connection: local
   gather_facts: no
 
-  ############################################################
-  # VARIABLES (FROM SURVEY)
-  ############################################################
   vars:
-    # OpenShift template
+    ############################################################
+    # TEMPLATE DETAILS (FIXED)
+    ############################################################
     template_name: httpd-example
     template_namespace: openshift
 
-    # Application (survey driven)
+    ############################################################
+    # APPLICATION (SURVEY INPUTS)
+    ############################################################
     app_name: "{{ app_name }}"
     runtime_namespace: "{{ runtime_namespace }}"
     httpd_version: "{{ httpd_version }}"
     memory_limit: "{{ memory_limit }}"
     git_repo_url: "{{ git_repo_url }}"
 
-    # Networking
+    ############################################################
+    # NETWORK SETTINGS
+    ############################################################
     app_port: 8080
     ingress_namespace: openshift-ingress
     route_host: "{{ app_name }}.apps.pgrhoso.dccloud.com"
@@ -27,7 +30,7 @@
   tasks:
 
     ############################################################
-    # 1️⃣ Process Apache HTTPD Template (BUILD PHASE)
+    # 1️⃣ Process Apache HTTPD Template
     ############################################################
     - name: Process Apache HTTPD template
       community.okd.openshift_process:
@@ -53,23 +56,7 @@
       loop: "{{ apache_template.resources }}"
 
     ############################################################
-    # 3️⃣ Wait until runtime pod is READY
-    ############################################################
-    - name: Wait for application pod to be running
-      kubernetes.core.k8s_info:
-        kind: Pod
-        namespace: "{{ runtime_namespace }}"
-        label_selectors:
-          - "name={{ app_name }}"
-      register: pod_info
-      until: >
-        pod_info.resources | length > 0 and
-        pod_info.resources[0].status.phase == "Running"
-      retries: 30
-      delay: 10
-
-    ############################################################
-    # 4️⃣ Create Route (Ingress)
+    # 3️⃣ Create Route (Ingress)
     ############################################################
     - name: Create OpenShift Route
       community.okd.k8s:
@@ -91,10 +78,9 @@
               termination: edge
 
     ############################################################
-    # 5️⃣ NetworkPolicy – APPLY ONLY TO RUNTIME PODS
-    #     (Build pods are NOT affected)
+    # 4️⃣ NetworkPolicy – BLOCK INTERNET, ALLOW INTERNAL + DNS
     ############################################################
-    - name: Apply NetworkPolicy (Block Internet for Runtime Pods)
+    - name: Apply NetworkPolicy (Namespace-wide)
       community.okd.k8s:
         state: present
         namespace: "{{ runtime_namespace }}"
@@ -102,19 +88,16 @@
           apiVersion: networking.k8s.io/v1
           kind: NetworkPolicy
           metadata:
-            name: "{{ app_name }}-runtime-restricted-egress"
+            name: deny-internet-allow-internal
           spec:
-            podSelector:
-              matchLabels:
-                name: "{{ app_name }}"   # runtime pods ONLY
-
+            podSelector: {}   # APPLY TO ALL PODS
             policyTypes:
               - Ingress
               - Egress
 
-            ############################
-            # INGRESS: OpenShift Router
-            ############################
+            ########################
+            # INGRESS
+            ########################
             ingress:
               - from:
                   - namespaceSelector:
@@ -124,22 +107,20 @@
                   - protocol: TCP
                     port: "{{ app_port }}"
 
-            ############################
-            # EGRESS: DNS + INTERNAL ONLY
-            ############################
+            ########################
+            # EGRESS
+            ########################
             egress:
-              # DNS (mandatory)
+              # ✅ Allow DNS
               - to:
-                  - namespaceSelector:
-                      matchLabels:
-                        kubernetes.io/metadata.name: openshift-dns
+                  - namespaceSelector: {}
                 ports:
                   - protocol: UDP
                     port: 53
                   - protocol: TCP
                     port: 53
 
-              # Internal cluster ranges
+              # ✅ Allow private/internal networks ONLY
               - to:
                   - ipBlock:
                       cidr: 10.0.0.0/8
