@@ -1,9 +1,12 @@
 ---
-- name: Deploy Apache HTTP Server via AAP (Survey + Robust NetworkPolicy)
+- name: Deploy Apache HTTP Server via AAP (Survey + Correct NetworkPolicy)
   hosts: localhost
   connection: local
   gather_facts: no
 
+  ############################################################
+  # SURVEY VARIABLES (PLAIN STRINGS)
+  ############################################################
   vars:
     app_name: "{{ app_name }}"
     runtime_namespace: "{{ runtime_namespace }}"
@@ -11,11 +14,13 @@
     memory_limit: "{{ memory_limit }}"
     git_repo_url: "{{ git_repo_url }}"
 
-    ingress_namespace: openshift-ingress
+    # Survey-driven (CSV / single-line)
     ingress_ports: "{{ ingress_ports }}"     # TCP:8080
-    egress_cidrs: "{{ egress_cidrs }}"       # 0.0.0.0/0 or GitHub CIDRs
+    egress_cidrs: "{{ egress_cidrs }}"       # 0.0.0.0/0
     egress_ports: "{{ egress_ports }}"       # TCP:443
 
+    # Fixed / best-practice values
+    ingress_namespace: openshift-ingress
     template_name: httpd-example
     template_namespace: openshift
     app_port: 8080
@@ -24,7 +29,7 @@
   tasks:
 
     ############################################################
-    # PROCESS TEMPLATE
+    # 1️⃣ PROCESS APACHE TEMPLATE
     ############################################################
     - name: Process Apache HTTPD template
       community.okd.openshift_process:
@@ -39,6 +44,9 @@
           SOURCE_REPOSITORY_URL: "{{ git_repo_url }}"
       register: apache_template
 
+    ############################################################
+    # 2️⃣ APPLY GENERATED RESOURCES
+    ############################################################
     - name: Create application resources
       community.okd.k8s:
         state: present
@@ -47,35 +55,45 @@
       loop: "{{ apache_template.resources }}"
 
     ############################################################
-    # PARSE PORTS
+    # 3️⃣ PARSE SURVEY PORTS (SAFE)
     ############################################################
-    - set_fact:
+    - name: Init parsed port lists
+      set_fact:
         ingress_ports_parsed: []
         egress_ports_parsed: []
 
     - name: Build ingress ports
       set_fact:
-        ingress_ports_parsed: "{{ ingress_ports_parsed + [ {'protocol': item.split(':')[0] | upper, 'port': item.split(':')[1] | int } ] }}"
+        ingress_ports_parsed: >-
+          {{ ingress_ports_parsed
+             + [ {'protocol': item.split(':')[0] | upper,
+                  'port': item.split(':')[1] | int } ] }}
       loop: "{{ ingress_ports.split(',') | map('trim') | list }}"
 
     - name: Build egress ports
       set_fact:
-        egress_ports_parsed: "{{ egress_ports_parsed + [ {'protocol': item.split(':')[0] | upper, 'port': item.split(':')[1] | int } ] }}"
+        egress_ports_parsed: >-
+          {{ egress_ports_parsed
+             + [ {'protocol': item.split(':')[0] | upper,
+                  'port': item.split(':')[1] | int } ] }}
       loop: "{{ egress_ports.split(',') | map('trim') | list }}"
 
     ############################################################
-    # PARSE CIDRS
+    # 4️⃣ PARSE EGRESS CIDRs
     ############################################################
-    - set_fact:
+    - name: Init egress CIDR list
+      set_fact:
         egress_to_blocks: []
 
     - name: Build egress CIDRs
       set_fact:
-        egress_to_blocks: "{{ egress_to_blocks + [ {'ipBlock': {'cidr': item}} ] }}"
+        egress_to_blocks: >-
+          {{ egress_to_blocks
+             + [ {'ipBlock': {'cidr': item}} ] }}
       loop: "{{ egress_cidrs.split(',') | map('trim') | list }}"
 
     ############################################################
-    # APPLY NETWORK POLICY (FIXED)
+    # 5️⃣ APPLY NETWORK POLICY (FINAL)
     ############################################################
     - name: Apply NetworkPolicy
       community.okd.k8s:
@@ -95,9 +113,9 @@
               - Ingress
               - Egress
 
-            #####################
-            # INGRESS (ROUTER)
-            #####################
+            ########################
+            # INGRESS (ROUTER ONLY)
+            ########################
             ingress:
               - from:
                   - namespaceSelector:
@@ -105,9 +123,9 @@
                         kubernetes.io/metadata.name: "{{ ingress_namespace }}"
                 ports: "{{ ingress_ports_parsed }}"
 
-            #####################
+            ########################
             # EGRESS
-            #####################
+            ########################
             egress:
               # DNS (MANDATORY)
               - to:
@@ -120,12 +138,12 @@
                   - protocol: TCP
                     port: 53
 
-              # HTTPS / CIDR BASED
+              # HTTPS / INTERNET
               - to: "{{ egress_to_blocks }}"
                 ports: "{{ egress_ports_parsed }}"
 
     ############################################################
-    # FORCE POD RESTART
+    # 6️⃣ FORCE POD RESTART
     ############################################################
     - name: Force rollout restart
       kubernetes.core.k8s:
