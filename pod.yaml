@@ -158,4 +158,4 @@
         merge_type: strategic-merge
         definition:
           spec:
-            replicas: 1
+            replicas: 10
