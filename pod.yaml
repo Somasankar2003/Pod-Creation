@@ -24,7 +24,6 @@
     # NETWORK
     ############################################################
     app_port: 8080
-    ingress_namespace: openshift-ingress
     route_host: "{{ app_name }}.apps.pgrhoso.dccloud.com"
 
   tasks:
@@ -78,7 +77,32 @@
               termination: edge
 
     ############################################################
-    # 4️⃣ APPLY NETWORK POLICY (FIXED)
+    # 4️⃣ BUILD NETWORK POLICY STRUCTURES (SAFE)
+    ############################################################
+    - name: Build ingress ipBlock list
+      set_fact:
+        ingress_from_blocks: >-
+          {{
+            ingress_cidrs
+            | from_yaml
+            | map('regex_replace', '^(.*)$', '{"ipBlock":{"cidr":"\\1"}}')
+            | map('from_yaml')
+            | list
+          }}
+
+    - name: Build egress ipBlock list
+      set_fact:
+        egress_to_blocks: >-
+          {{
+            egress_cidrs
+            | from_yaml
+            | map('regex_replace', '^(.*)$', '{"ipBlock":{"cidr":"\\1"}}')
+            | map('from_yaml')
+            | list
+          }}
+
+    ############################################################
+    # 5️⃣ APPLY NETWORK POLICY
     ############################################################
     - name: Apply NetworkPolicy (Survey Driven Ingress & Egress)
       community.okd.k8s:
@@ -98,32 +122,16 @@
               - Ingress
               - Egress
 
-            ####################################################
-            # INGRESS
-            ####################################################
             ingress:
-              - from: >
-                  {{ ingress_cidrs
-                     | from_yaml
-                     | map('regex_replace', '^(.*)$', '{"ipBlock":{"cidr":"\\1"}}')
-                     | map('from_yaml')
-                     | list }}
+              - from: "{{ ingress_from_blocks }}"
                 ports: "{{ ingress_ports | from_yaml }}"
 
-            ####################################################
-            # EGRESS
-            ####################################################
             egress:
-              - to: >
-                  {{ egress_cidrs
-                     | from_yaml
-                     | map('regex_replace', '^(.*)$', '{"ipBlock":{"cidr":"\\1"}}')
-                     | map('from_yaml')
-                     | list }}
+              - to: "{{ egress_to_blocks }}"
                 ports: "{{ egress_ports | from_yaml }}"
 
     ############################################################
-    # 5️⃣ FORCE NEW POD (ROLLING RESTART)
+    # 6️⃣ FORCE NEW POD (ROLLING RESTART)
     ############################################################
     - name: Force rollout restart
       kubernetes.core.k8s:
