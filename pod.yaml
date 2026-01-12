@@ -15,16 +15,16 @@
     git_repo_url: "{{ git_repo_url }}"
 
     # Survey-driven (CSV / single-line)
-    ingress_ports: "{{ ingress_ports }}"        # TCP:8080
-    egress_cidrs: "{{ egress_cidrs }}"          # 140.82.0.0/16,192.30.252.0/22
-    egress_ports: "{{ egress_ports }}"          # TCP:443
+    ingress_ports: "{{ ingress_ports }}"          # TCP:8080
+    ingress_cidrs: "{{ ingress_cidrs }}"          # 0.0.0.0/0 or 10.68.0.0/16
+    egress_cidrs: "{{ egress_cidrs }}"            # allowed external CIDRs
+    egress_ports: "{{ egress_ports }}"            # TCP:443
 
     # DNS (survey or defaults)
     dns_service_cidr: "{{ dns_service_cidr | default('172.30.0.0/16') }}"
     dns_node_local_ip: "{{ dns_node_local_ip | default('169.254.0.5/32') }}"
 
     # Fixed OpenShift values
-    ingress_namespace: openshift-ingress
     template_name: httpd-example
     template_namespace: openshift
     app_port: 8080
@@ -59,7 +59,7 @@
       loop: "{{ apache_template.resources }}"
 
     ############################################################
-    # 3️⃣ PARSE SURVEY PORTS (SAFE)
+    # 3️⃣ PARSE SURVEY PORTS
     ############################################################
     - name: Init parsed port lists
       set_fact:
@@ -83,11 +83,19 @@
       loop: "{{ egress_ports.split(',') | map('trim') | list }}"
 
     ############################################################
-    # 4️⃣ PARSE EGRESS CIDRs (STRICT ALLOW LIST)
+    # 4️⃣ PARSE CIDRs (INGRESS + EGRESS)
     ############################################################
-    - name: Init egress CIDR list
+    - name: Init CIDR lists
       set_fact:
+        ingress_from_blocks: []
         egress_to_blocks: []
+
+    - name: Build ingress CIDRs
+      set_fact:
+        ingress_from_blocks: >-
+          {{ ingress_from_blocks
+             + [ {'ipBlock': {'cidr': item}} ] }}
+      loop: "{{ ingress_cidrs.split(',') | map('trim') | list }}"
 
     - name: Build egress CIDRs
       set_fact:
@@ -97,7 +105,7 @@
       loop: "{{ egress_cidrs.split(',') | map('trim') | list }}"
 
     ############################################################
-    # 5️⃣ APPLY NETWORK POLICY (CORRECT & STRICT)
+    # 5️⃣ APPLY NETWORK POLICY
     ############################################################
     - name: Apply NetworkPolicy
       community.okd.k8s:
@@ -118,20 +126,17 @@
               - Egress
 
             ########################
-            # INGRESS (ROUTER ONLY)
+            # INGRESS (CIDR BASED)
             ########################
             ingress:
-              - from:
-                  - namespaceSelector:
-                      matchLabels:
-                        kubernetes.io/metadata.name: "{{ ingress_namespace }}"
+              - from: "{{ ingress_from_blocks }}"
                 ports: "{{ ingress_ports_parsed }}"
 
             ########################
             # EGRESS (STRICT)
             ########################
             egress:
-              # DNS via Service network
+              # DNS via service network
               - to:
                   - ipBlock:
                       cidr: "{{ dns_service_cidr }}"
@@ -151,7 +156,7 @@
                   - protocol: TCP
                     port: 53
 
-              # ONLY ALLOWED CIDRs (NO INTERNET WILDCARD)
+              # ONLY ALLOWED CIDRs
               - to: "{{ egress_to_blocks }}"
                 ports: "{{ egress_ports_parsed }}"
 
