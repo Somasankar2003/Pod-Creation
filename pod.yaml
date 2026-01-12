@@ -1,11 +1,11 @@
 ---
-- name: Deploy Apache HTTP Server via AAP (Survey-driven NetworkPolicy)
+- name: Deploy Apache HTTP Server via AAP (Survey + Safe NetworkPolicy)
   hosts: localhost
   connection: local
   gather_facts: no
 
   ############################################################
-  # SURVEY VARIABLES (AAP)
+  # SURVEY VARIABLES (ALL SINGLE-LINE STRINGS)
   ############################################################
   vars:
     app_name: "{{ app_name }}"
@@ -13,6 +13,12 @@
     httpd_version: "{{ httpd_version }}"
     memory_limit: "{{ memory_limit }}"
     git_repo_url: "{{ git_repo_url }}"
+
+    # Network survey inputs (CSV / STRING)
+    ingress_cidrs: "{{ ingress_cidrs }}"       # e.g. 0.0.0.0/0
+    ingress_ports: "{{ ingress_ports }}"       # e.g. TCP:8080
+    egress_cidrs: "{{ egress_cidrs }}"         # e.g. 0.0.0.0/0
+    egress_ports: "{{ egress_ports }}"         # e.g. UDP:53,TCP:53,TCP:443
 
     ############################################################
     # TEMPLATE DETAILS
@@ -77,25 +83,43 @@
               termination: edge
 
     ############################################################
-    # 4️⃣ BUILD NETWORK POLICY STRUCTURES (SAFE)
+    # 4️⃣ PARSE SURVEY INPUTS (SAFE, NO YAML)
     ############################################################
-    - name: Build ingress ipBlock list
+    - name: Parse ingress ports
+      set_fact:
+        ingress_ports_parsed: >-
+          {{
+            ingress_ports.split(',')
+            | map('regex_replace', '^([^:]+):(.*)$', '{"protocol":"\\1","port":\\2}')
+            | map('from_yaml')
+            | list
+          }}
+
+    - name: Parse egress ports
+      set_fact:
+        egress_ports_parsed: >-
+          {{
+            egress_ports.split(',')
+            | map('regex_replace', '^([^:]+):(.*)$', '{"protocol":"\\1","port":\\2}')
+            | map('from_yaml')
+            | list
+          }}
+
+    - name: Parse ingress CIDRs
       set_fact:
         ingress_from_blocks: >-
           {{
-            ingress_cidrs
-            | from_yaml
+            ingress_cidrs.split(',')
             | map('regex_replace', '^(.*)$', '{"ipBlock":{"cidr":"\\1"}}')
             | map('from_yaml')
             | list
           }}
 
-    - name: Build egress ipBlock list
+    - name: Parse egress CIDRs
       set_fact:
         egress_to_blocks: >-
           {{
-            egress_cidrs
-            | from_yaml
+            egress_cidrs.split(',')
             | map('regex_replace', '^(.*)$', '{"ipBlock":{"cidr":"\\1"}}')
             | map('from_yaml')
             | list
@@ -104,7 +128,7 @@
     ############################################################
     # 5️⃣ APPLY NETWORK POLICY
     ############################################################
-    - name: Apply NetworkPolicy (Survey Driven Ingress & Egress)
+    - name: Apply NetworkPolicy (CSV Survey Driven)
       community.okd.k8s:
         state: present
         namespace: "{{ runtime_namespace }}"
@@ -124,14 +148,14 @@
 
             ingress:
               - from: "{{ ingress_from_blocks }}"
-                ports: "{{ ingress_ports | from_yaml }}"
+                ports: "{{ ingress_ports_parsed }}"
 
             egress:
               - to: "{{ egress_to_blocks }}"
-                ports: "{{ egress_ports | from_yaml }}"
+                ports: "{{ egress_ports_parsed }}"
 
     ############################################################
-    # 6️⃣ FORCE NEW POD (ROLLING RESTART)
+    # 6️⃣ FORCE POD RESTART
     ############################################################
     - name: Force rollout restart
       kubernetes.core.k8s:
