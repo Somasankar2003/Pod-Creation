@@ -4,25 +4,22 @@
   connection: local
   gather_facts: no
 
+  ############################################################
+  # VARIABLES (FROM SURVEY)
+  ############################################################
   vars:
-    ############################################################
-    # TEMPLATE DETAILS
-    ############################################################
+    # OpenShift template info (FIXED)
     template_name: httpd-example
     template_namespace: openshift
 
-    ############################################################
-    # APPLICATION (FROM SURVEY)
-    ############################################################
+    # Application inputs
     app_name: "{{ app_name }}"
     runtime_namespace: "{{ runtime_namespace }}"
     httpd_version: "{{ httpd_version }}"
     memory_limit: "{{ memory_limit }}"
     git_repo_url: "{{ git_repo_url }}"
 
-    ############################################################
-    # NETWORK SETTINGS
-    ############################################################
+    # Networking
     app_port: 8080
     ingress_namespace: openshift-ingress
     route_host: "{{ app_name }}.apps.pgrhoso.dccloud.com"
@@ -30,7 +27,7 @@
   tasks:
 
     ############################################################
-    # 1️⃣ Process Apache HTTPD Template
+    # 1️⃣ Process Apache HTTPD OpenShift Template
     ############################################################
     - name: Process Apache HTTPD template
       community.okd.openshift_process:
@@ -78,9 +75,9 @@
               termination: edge
 
     ############################################################
-    # 4️⃣ NetworkPolicy – BLOCK INTERNET (APP PODS ONLY)
+    # 4️⃣ NetworkPolicy – ALL PODS, INTERNET BLOCKED
     ############################################################
-    - name: Apply NetworkPolicy (Block Internet for App Pods Only)
+    - name: Apply NetworkPolicy (Block Internet, Allow Internal)
       community.okd.k8s:
         state: present
         namespace: "{{ runtime_namespace }}"
@@ -88,21 +85,15 @@
           apiVersion: networking.k8s.io/v1
           kind: NetworkPolicy
           metadata:
-            name: "{{ app_name }}-deny-internet"
+            name: deny-internet-allow-internal
           spec:
-            ####################################################
-            # IMPORTANT: ONLY APP PODS
-            ####################################################
-            podSelector:
-              matchLabels:
-                app: "{{ app_name }}"
-
+            podSelector: {}   # ✅ applies to ALL pods
             policyTypes:
               - Ingress
               - Egress
 
             ####################################################
-            # INGRESS: Allow OpenShift Router
+            # INGRESS: Allow OpenShift Router only
             ####################################################
             ingress:
               - from:
@@ -114,10 +105,21 @@
                     port: "{{ app_port }}"
 
             ####################################################
-            # EGRESS: ONLY PRIVATE NETWORKS
-            # PUBLIC INTERNET IS BLOCKED
+            # EGRESS: Allow DNS + Internal Networks ONLY
             ####################################################
             egress:
+              # DNS (required)
+              - to:
+                  - namespaceSelector:
+                      matchLabels:
+                        kubernetes.io/metadata.name: openshift-dns
+                ports:
+                  - protocol: UDP
+                    port: 53
+                  - protocol: TCP
+                    port: 53
+
+              # Internal cluster networks
               - to:
                   - ipBlock:
                       cidr: 10.0.0.0/8
@@ -127,19 +129,3 @@
               - to:
                   - ipBlock:
                       cidr: 192.168.0.0/16
-
-
-    - name: Restart deployment to apply NetworkPolicy
-      kubernetes.core.k8s:
-        state: patched
-        api_version: apps/v1
-        kind: Deployment
-        name: "{{ app_name }}"
-        namespace: "{{ runtime_namespace }}"
-        merge_type: strategic-merge
-        definition:
-          spec:
-            template:
-              metadata:
-                annotations:
-                  restartedAt: "{{ lookup('pipe', 'date +%s') }}"
