@@ -46,7 +46,7 @@
       register: apache_template
 
     ############################################################
-    # 2️⃣ Apply Generated Resources
+    # 2️⃣ Create All Application Resources
     ############################################################
     - name: Create application resources
       community.okd.k8s:
@@ -56,7 +56,7 @@
       loop: "{{ apache_template.resources }}"
 
     ############################################################
-    # 3️⃣ Create Route (Ingress)
+    # 3️⃣ Create OpenShift Route (Ingress)
     ############################################################
     - name: Create OpenShift Route
       community.okd.k8s:
@@ -78,9 +78,9 @@
               termination: edge
 
     ############################################################
-    # 4️⃣ NetworkPolicy – BLOCK INTERNET, ALLOW INTERNAL + DNS
+    # 4️⃣ NetworkPolicy – ALLOW BUILD POD INTERNET (GitHub + DNS)
     ############################################################
-    - name: Apply NetworkPolicy (Namespace-wide)
+    - name: Allow egress for build pods (GitHub + DNS)
       community.okd.k8s:
         state: present
         namespace: "{{ runtime_namespace }}"
@@ -88,16 +88,48 @@
           apiVersion: networking.k8s.io/v1
           kind: NetworkPolicy
           metadata:
-            name: deny-internet-allow-internal
+            name: allow-build-egress
           spec:
-            podSelector: {}   # APPLY TO ALL PODS
+            podSelector:
+              matchLabels:
+                openshift.io/build.name: ""
+            policyTypes:
+              - Egress
+            egress:
+              - to:
+                  - ipBlock:
+                      cidr: 0.0.0.0/0
+                ports:
+                  - protocol: TCP
+                    port: 443
+                  - protocol: UDP
+                    port: 53
+                  - protocol: TCP
+                    port: 53
+
+    ############################################################
+    # 5️⃣ NetworkPolicy – BLOCK INTERNET FOR APPLICATION PODS
+    ############################################################
+    - name: Block internet for application pods
+      community.okd.k8s:
+        state: present
+        namespace: "{{ runtime_namespace }}"
+        definition:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: "{{ app_name }}-deny-internet"
+          spec:
+            podSelector:
+              matchLabels:
+                name: "{{ app_name }}"
             policyTypes:
               - Ingress
               - Egress
 
-            ########################
-            # INGRESS
-            ########################
+            ####################################################
+            # INGRESS – Allow OpenShift Router Only
+            ####################################################
             ingress:
               - from:
                   - namespaceSelector:
@@ -107,20 +139,10 @@
                   - protocol: TCP
                     port: "{{ app_port }}"
 
-            ########################
-            # EGRESS
-            ########################
+            ####################################################
+            # EGRESS – Allow ONLY private networks
+            ####################################################
             egress:
-              # ✅ Allow DNS
-              - to:
-                  - namespaceSelector: {}
-                ports:
-                  - protocol: UDP
-                    port: 53
-                  - protocol: TCP
-                    port: 53
-
-              # ✅ Allow private/internal networks ONLY
               - to:
                   - ipBlock:
                       cidr: 10.0.0.0/8
