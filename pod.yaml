@@ -1,11 +1,11 @@
 ---
-- name: Deploy Apache HTTP Server via AAP (Survey + Safe NetworkPolicy)
+- name: Deploy Apache HTTP Server via AAP (Survey + Robust NetworkPolicy)
   hosts: localhost
   connection: local
   gather_facts: no
 
   ############################################################
-  # SURVEY VARIABLES (ALL STRINGS – PASTE SAFE)
+  # SURVEY VARIABLES (PLAIN STRINGS)
   ############################################################
   vars:
     app_name: "{{ app_name }}"
@@ -14,28 +14,20 @@
     memory_limit: "{{ memory_limit }}"
     git_repo_url: "{{ git_repo_url }}"
 
-    # Network survey inputs (CSV / STRING)
-    ingress_cidrs: "{{ ingress_cidrs }}"     # e.g. 0.0.0.0/0
-    ingress_ports: "{{ ingress_ports }}"     # e.g. TCP:8080 or TCP: 8080
-    egress_cidrs: "{{ egress_cidrs }}"       # e.g. 0.0.0.0/0
-    egress_ports: "{{ egress_ports }}"       # e.g. UDP:53, TCP:53, TCP:443
+    ingress_cidrs: "{{ ingress_cidrs }}"     # 0.0.0.0/0
+    ingress_ports: "{{ ingress_ports }}"     # TCP:8080
+    egress_cidrs: "{{ egress_cidrs }}"       # 0.0.0.0/0
+    egress_ports: "{{ egress_ports }}"       # UDP:53, TCP:53, TCP:443
 
-    ############################################################
-    # TEMPLATE DETAILS
-    ############################################################
     template_name: httpd-example
     template_namespace: openshift
-
-    ############################################################
-    # NETWORK
-    ############################################################
     app_port: 8080
     route_host: "{{ app_name }}.apps.pgrhoso.dccloud.com"
 
   tasks:
 
     ############################################################
-    # 1️⃣ PROCESS APACHE TEMPLATE
+    # 1️⃣ PROCESS TEMPLATE
     ############################################################
     - name: Process Apache HTTPD template
       community.okd.openshift_process:
@@ -51,7 +43,7 @@
       register: apache_template
 
     ############################################################
-    # 2️⃣ APPLY GENERATED RESOURCES
+    # 2️⃣ APPLY RESOURCES
     ############################################################
     - name: Create application resources
       community.okd.k8s:
@@ -83,64 +75,49 @@
               termination: edge
 
     ############################################################
-    # 4️⃣ PARSE SURVEY INPUTS (SPACE-TOLERANT)
+    # 4️⃣ BUILD NETWORK POLICY STRUCTURES (NATIVE, SAFE)
     ############################################################
-    - name: Parse ingress ports (safe)
-      set_fact:
-        ingress_ports_parsed: >-
-          {{
-            ingress_ports.split(',')
-            | map('trim')
-            | map('regex_replace',
-                  '^([^: ]+) *: *([0-9]+)$',
-                  '{"protocol":"\\1","port":\\2}')
-            | map('from_yaml')
-            | list
-          }}
 
-    - name: Parse egress ports (safe)
+    - name: Init ingress ports list
       set_fact:
-        egress_ports_parsed: >-
-          {{
-            egress_ports.split(',')
-            | map('trim')
-            | map('regex_replace',
-                  '^([^: ]+) *: *([0-9]+)$',
-                  '{"protocol":"\\1","port":\\2}')
-            | map('from_yaml')
-            | list
-          }}
+        ingress_ports_parsed: []
 
-    - name: Parse ingress CIDRs
+    - name: Init egress ports list
       set_fact:
-        ingress_from_blocks: >-
-          {{
-            ingress_cidrs.split(',')
-            | map('trim')
-            | map('regex_replace',
-                  '^(.*)$',
-                  '{"ipBlock":{"cidr":"\\1"}}')
-            | map('from_yaml')
-            | list
-          }}
+        egress_ports_parsed: []
 
-    - name: Parse egress CIDRs
+    - name: Init ingress cidr list
       set_fact:
-        egress_to_blocks: >-
-          {{
-            egress_cidrs.split(',')
-            | map('trim')
-            | map('regex_replace',
-                  '^(.*)$',
-                  '{"ipBlock":{"cidr":"\\1"}}')
-            | map('from_yaml')
-            | list
-          }}
+        ingress_from_blocks: []
+
+    - name: Init egress cidr list
+      set_fact:
+        egress_to_blocks: []
+
+    - name: Build ingress ports
+      set_fact:
+        ingress_ports_parsed: "{{ ingress_ports_parsed + [ {'protocol': item.split(':')[0] | upper, 'port': item.split(':')[1] | int } ] }}"
+      loop: "{{ ingress_ports.split(',') | map('trim') | list }}"
+
+    - name: Build egress ports
+      set_fact:
+        egress_ports_parsed: "{{ egress_ports_parsed + [ {'protocol': item.split(':')[0] | upper, 'port': item.split(':')[1] | int } ] }}"
+      loop: "{{ egress_ports.split(',') | map('trim') | list }}"
+
+    - name: Build ingress CIDRs
+      set_fact:
+        ingress_from_blocks: "{{ ingress_from_blocks + [ {'ipBlock': {'cidr': item}} ] }}"
+      loop: "{{ ingress_cidrs.split(',') | map('trim') | list }}"
+
+    - name: Build egress CIDRs
+      set_fact:
+        egress_to_blocks: "{{ egress_to_blocks + [ {'ipBlock': {'cidr': item}} ] }}"
+      loop: "{{ egress_cidrs.split(',') | map('trim') | list }}"
 
     ############################################################
     # 5️⃣ APPLY NETWORK POLICY
     ############################################################
-    - name: Apply NetworkPolicy (CSV Survey Driven)
+    - name: Apply NetworkPolicy (FINAL SAFE VERSION)
       community.okd.k8s:
         state: present
         namespace: "{{ runtime_namespace }}"
@@ -153,15 +130,12 @@
             podSelector:
               matchLabels:
                 name: "{{ app_name }}"
-
             policyTypes:
               - Ingress
               - Egress
-
             ingress:
               - from: "{{ ingress_from_blocks }}"
                 ports: "{{ ingress_ports_parsed }}"
-
             egress:
               - to: "{{ egress_to_blocks }}"
                 ports: "{{ egress_ports_parsed }}"
