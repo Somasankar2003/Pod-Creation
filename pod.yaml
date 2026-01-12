@@ -30,7 +30,7 @@
   tasks:
 
     ############################################################
-    # 1️⃣ Process OpenShift Apache HTTPD Template
+    # 1️⃣ Process Apache HTTPD Template
     ############################################################
     - name: Process Apache HTTPD template
       community.okd.openshift_process:
@@ -78,9 +78,9 @@
               termination: edge
 
     ############################################################
-    # 4️⃣ NetworkPolicy – Allow Ingress, Block Internet
+    # 4️⃣ NetworkPolicy – BLOCK INTERNET (APP PODS ONLY)
     ############################################################
-    - name: Apply NetworkPolicy (Block Internet)
+    - name: Apply NetworkPolicy (Block Internet for App Pods Only)
       community.okd.k8s:
         state: present
         namespace: "{{ runtime_namespace }}"
@@ -90,13 +90,19 @@
           metadata:
             name: "{{ app_name }}-deny-internet"
           spec:
-            podSelector: {}   # applies to ALL pods in namespace
+            ####################################################
+            # IMPORTANT: ONLY APP PODS
+            ####################################################
+            podSelector:
+              matchLabels:
+                app: "{{ app_name }}"
+
             policyTypes:
               - Ingress
               - Egress
 
             ####################################################
-            # INGRESS: Allow only OpenShift Router
+            # INGRESS: Allow OpenShift Router
             ####################################################
             ingress:
               - from:
@@ -108,8 +114,8 @@
                     port: "{{ app_port }}"
 
             ####################################################
-            # EGRESS: Allow ONLY private/internal networks
-            # Internet is BLOCKED
+            # EGRESS: ONLY PRIVATE NETWORKS
+            # PUBLIC INTERNET IS BLOCKED
             ####################################################
             egress:
               - to:
@@ -122,10 +128,8 @@
                   - ipBlock:
                       cidr: 192.168.0.0/16
 
-    ############################################################
-    # 5️⃣ FORCE POD RESTART (AAP SAFE)
-    ############################################################
-    - name: Restart deployment to create new pod
+
+    - name: Restart deployment to apply NetworkPolicy
       kubernetes.core.k8s:
         state: patched
         api_version: apps/v1
