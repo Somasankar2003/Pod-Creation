@@ -1,5 +1,5 @@
 ---
-- name: Deploy Apache HTTP Server via AAP (Survey + Correct NetworkPolicy)
+- name: Deploy Apache HTTP Server via AAP (Survey + Strict NetworkPolicy)
   hosts: localhost
   connection: local
   gather_facts: no
@@ -15,11 +15,15 @@
     git_repo_url: "{{ git_repo_url }}"
 
     # Survey-driven (CSV / single-line)
-    ingress_ports: "{{ ingress_ports }}"     # TCP:8080
-    egress_cidrs: "{{ egress_cidrs }}"       # 0.0.0.0/0
-    egress_ports: "{{ egress_ports }}"       # TCP:443
+    ingress_ports: "{{ ingress_ports }}"        # TCP:8080
+    egress_cidrs: "{{ egress_cidrs }}"          # 140.82.0.0/16,192.30.252.0/22
+    egress_ports: "{{ egress_ports }}"          # TCP:443
 
-    # Fixed / best-practice values
+    # DNS (survey or defaults)
+    dns_service_cidr: "{{ dns_service_cidr | default('172.30.0.0/16') }}"
+    dns_node_local_ip: "{{ dns_node_local_ip | default('169.254.0.5/32') }}"
+
+    # Fixed OpenShift values
     ingress_namespace: openshift-ingress
     template_name: httpd-example
     template_namespace: openshift
@@ -79,7 +83,7 @@
       loop: "{{ egress_ports.split(',') | map('trim') | list }}"
 
     ############################################################
-    # 4️⃣ PARSE EGRESS CIDRs
+    # 4️⃣ PARSE EGRESS CIDRs (STRICT ALLOW LIST)
     ############################################################
     - name: Init egress CIDR list
       set_fact:
@@ -93,7 +97,7 @@
       loop: "{{ egress_cidrs.split(',') | map('trim') | list }}"
 
     ############################################################
-    # 5️⃣ APPLY NETWORK POLICY (FINAL)
+    # 5️⃣ APPLY NETWORK POLICY (CORRECT & STRICT)
     ############################################################
     - name: Apply NetworkPolicy
       community.okd.k8s:
@@ -124,21 +128,30 @@
                 ports: "{{ ingress_ports_parsed }}"
 
             ########################
-            # EGRESS
+            # EGRESS (STRICT)
             ########################
             egress:
-              # DNS (MANDATORY)
+              # DNS via Service network
               - to:
-                  - namespaceSelector:
-                      matchLabels:
-                        kubernetes.io/metadata.name: openshift-dns
+                  - ipBlock:
+                      cidr: "{{ dns_service_cidr }}"
                 ports:
                   - protocol: UDP
                     port: 53
                   - protocol: TCP
                     port: 53
 
-              # HTTPS / INTERNET
+              # DNS via node-local cache
+              - to:
+                  - ipBlock:
+                      cidr: "{{ dns_node_local_ip }}"
+                ports:
+                  - protocol: UDP
+                    port: 53
+                  - protocol: TCP
+                    port: 53
+
+              # ONLY ALLOWED CIDRs (NO INTERNET WILDCARD)
               - to: "{{ egress_to_blocks }}"
                 ports: "{{ egress_ports_parsed }}"
 
