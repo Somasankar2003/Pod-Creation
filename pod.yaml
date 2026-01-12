@@ -1,18 +1,18 @@
 ---
-- name: Deploy Apache HTTP Server via AAP (Always New Pod)
+- name: Deploy Apache HTTP Server via AAP (Ingress OK, Internet Restricted)
   hosts: localhost
   connection: local
   gather_facts: no
 
   vars:
     ############################################################
-    # TEMPLATE DETAILS
+    # OPENSHIFT TEMPLATE DETAILS
     ############################################################
     template_name: httpd-example
     template_namespace: openshift
 
     ############################################################
-    # APPLICATION (FROM SURVEY)
+    # SURVEY VARIABLES (YOU PROVIDE)
     ############################################################
     app_name: "{{ app_name }}"
     runtime_namespace: "{{ runtime_namespace }}"
@@ -21,7 +21,7 @@
     git_repo_url: "{{ git_repo_url }}"
 
     ############################################################
-    # NETWORK SETTINGS
+    # NETWORK
     ############################################################
     app_port: 8080
     ingress_namespace: openshift-ingress
@@ -30,7 +30,7 @@
   tasks:
 
     ############################################################
-    # 1️⃣ Process Apache HTTPD Template
+    # 1️⃣ PROCESS APACHE TEMPLATE
     ############################################################
     - name: Process Apache HTTPD template
       community.okd.openshift_process:
@@ -46,7 +46,7 @@
       register: apache_template
 
     ############################################################
-    # 2️⃣ Apply Generated Resources
+    # 2️⃣ APPLY GENERATED RESOURCES
     ############################################################
     - name: Create application resources
       community.okd.k8s:
@@ -56,7 +56,7 @@
       loop: "{{ apache_template.resources }}"
 
     ############################################################
-    # 3️⃣ Create Route (Ingress)
+    # 3️⃣ CREATE ROUTE (INGRESS)
     ############################################################
     - name: Create OpenShift Route
       community.okd.k8s:
@@ -78,9 +78,9 @@
               termination: edge
 
     ############################################################
-    # 4️⃣ NetworkPolicy – Block Internet for APP PODS
+    # 4️⃣ NETWORK POLICY – APP PODS ONLY
     ############################################################
-    - name: Apply NetworkPolicy (Block Internet, Allow DNS + GitHub)
+    - name: Apply NetworkPolicy (Restrict Internet, Allow DNS + GitHub)
       community.okd.k8s:
         state: present
         namespace: "{{ runtime_namespace }}"
@@ -88,8 +88,11 @@
           apiVersion: networking.k8s.io/v1
           kind: NetworkPolicy
           metadata:
-            name: "{{ app_name }}-egress-policy"
+            name: "{{ app_name }}-restricted-egress"
           spec:
+            ####################################################
+            # APPLY ONLY TO APPLICATION PODS
+            ####################################################
             podSelector:
               matchLabels:
                 name: "{{ app_name }}"
@@ -98,6 +101,9 @@
               - Ingress
               - Egress
 
+            ####################################################
+            # INGRESS – FROM OPENSHIFT ROUTER
+            ####################################################
             ingress:
               - from:
                   - namespaceSelector:
@@ -107,8 +113,11 @@
                   - protocol: TCP
                     port: "{{ app_port }}"
 
+            ####################################################
+            # EGRESS – DNS + GITHUB ONLY
+            ####################################################
             egress:
-              # ✅ Allow DNS
+              # DNS
               - to:
                   - ipBlock:
                       cidr: 0.0.0.0/0
@@ -118,7 +127,7 @@
                   - protocol: TCP
                     port: 53
 
-              # ✅ Allow HTTPS (GitHub)
+              # HTTPS (GitHub, image pulls)
               - to:
                   - ipBlock:
                       cidr: 0.0.0.0/0
@@ -127,9 +136,9 @@
                     port: 443
 
     ############################################################
-    # 5️⃣ FORCE ROLLOUT (THIS CREATES A NEW POD EVERY RUN)
+    # 5️⃣ SCALE DEPLOYMENT → GUARANTEED NEW POD
     ############################################################
-    - name: Force deployment rollout (ALWAYS create new pod)
+    - name: Scale deployment to create NEW pod
       kubernetes.core.k8s:
         state: patched
         api_version: apps/v1
@@ -139,7 +148,4 @@
         merge_type: strategic-merge
         definition:
           spec:
-            template:
-              metadata:
-                annotations:
-                  rollout-restart: "{{ lookup('pipe', 'date +%s') }}"
+            replicas: 2
