@@ -1,18 +1,18 @@
 ---
-- name: Deploy Apache HTTP Server via AAP (Ingress Allowed, Internet Blocked)
+- name: Deploy Apache HTTP Server via AAP (New App = New Pod)
   hosts: localhost
   connection: local
   gather_facts: no
 
   vars:
     ############################################################
-    # TEMPLATE DETAILS (FIXED)
+    # OPENSHIFT TEMPLATE DETAILS
     ############################################################
     template_name: httpd-example
     template_namespace: openshift
 
     ############################################################
-    # APPLICATION (SURVEY INPUTS)
+    # APPLICATION (FROM SURVEY)
     ############################################################
     app_name: "{{ app_name }}"
     runtime_namespace: "{{ runtime_namespace }}"
@@ -46,7 +46,7 @@
       register: apache_template
 
     ############################################################
-    # 2️⃣ Create All Application Resources
+    # 2️⃣ Apply Generated Resources
     ############################################################
     - name: Create application resources
       community.okd.k8s:
@@ -56,7 +56,7 @@
       loop: "{{ apache_template.resources }}"
 
     ############################################################
-    # 3️⃣ Create OpenShift Route (Ingress)
+    # 3️⃣ Create Route
     ############################################################
     - name: Create OpenShift Route
       community.okd.k8s:
@@ -67,6 +67,8 @@
           kind: Route
           metadata:
             name: "{{ app_name }}"
+            labels:
+              app: "{{ app_name }}"
           spec:
             host: "{{ route_host }}"
             to:
@@ -78,9 +80,9 @@
               termination: edge
 
     ############################################################
-    # 4️⃣ NetworkPolicy – ALLOW BUILD POD INTERNET (GitHub + DNS)
+    # 4️⃣ NetworkPolicy for BUILD PODS (ALLOW INTERNET)
     ############################################################
-    - name: Allow egress for build pods (GitHub + DNS)
+    - name: Allow internet for build pods
       community.okd.k8s:
         state: present
         namespace: "{{ runtime_namespace }}"
@@ -108,7 +110,7 @@
                     port: 53
 
     ############################################################
-    # 5️⃣ NetworkPolicy – BLOCK INTERNET FOR APPLICATION PODS
+    # 5️⃣ NetworkPolicy for APP PODS (BLOCK INTERNET)
     ############################################################
     - name: Block internet for application pods
       community.okd.k8s:
@@ -127,9 +129,6 @@
               - Ingress
               - Egress
 
-            ####################################################
-            # INGRESS – Allow OpenShift Router Only
-            ####################################################
             ingress:
               - from:
                   - namespaceSelector:
@@ -139,9 +138,6 @@
                   - protocol: TCP
                     port: "{{ app_port }}"
 
-            ####################################################
-            # EGRESS – Allow ONLY private networks
-            ####################################################
             egress:
               - to:
                   - ipBlock:
