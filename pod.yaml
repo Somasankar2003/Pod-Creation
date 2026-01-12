@@ -1,5 +1,5 @@
 ---
-- name: Deploy Apache HTTP Server via AAP (Ingress Allowed, Internet Blocked)
+- name: Deploy Apache HTTP Server via AAP (Always New Pod)
   hosts: localhost
   connection: local
   gather_facts: no
@@ -78,9 +78,9 @@
               termination: edge
 
     ############################################################
-    # 4️⃣ NetworkPolicy – BLOCK INTERNET, ALLOW DNS + GITHUB
+    # 4️⃣ NetworkPolicy – Block Internet for APP PODS
     ############################################################
-    - name: Apply NetworkPolicy (App Pods Only)
+    - name: Apply NetworkPolicy (Block Internet, Allow DNS + GitHub)
       community.okd.k8s:
         state: present
         namespace: "{{ runtime_namespace }}"
@@ -88,19 +88,16 @@
           apiVersion: networking.k8s.io/v1
           kind: NetworkPolicy
           metadata:
-            name: "{{ app_name }}-restricted-egress"
+            name: "{{ app_name }}-egress-policy"
           spec:
             podSelector:
               matchLabels:
-                app: "{{ app_name }}"
+                name: "{{ app_name }}"
 
             policyTypes:
               - Ingress
               - Egress
 
-            ####################################################
-            # INGRESS: Allow OpenShift Router
-            ####################################################
             ingress:
               - from:
                   - namespaceSelector:
@@ -110,29 +107,29 @@
                   - protocol: TCP
                     port: "{{ app_port }}"
 
-            ####################################################
-            # EGRESS:
-            # ✅ DNS allowed
-            # ✅ HTTPS (GitHub) allowed
-            # ❌ Internet blocked
-            ####################################################
             egress:
-              # DNS
-              - ports:
+              # ✅ Allow DNS
+              - to:
+                  - ipBlock:
+                      cidr: 0.0.0.0/0
+                ports:
                   - protocol: UDP
                     port: 53
                   - protocol: TCP
                     port: 53
 
-              # HTTPS (GitHub)
-              - ports:
+              # ✅ Allow HTTPS (GitHub)
+              - to:
+                  - ipBlock:
+                      cidr: 0.0.0.0/0
+                ports:
                   - protocol: TCP
                     port: 443
 
     ############################################################
-    # 5️⃣ Restart Deployment (Apply Policy)
+    # 5️⃣ FORCE ROLLOUT (THIS CREATES A NEW POD EVERY RUN)
     ############################################################
-    - name: Restart deployment to apply NetworkPolicy
+    - name: Force deployment rollout (ALWAYS create new pod)
       kubernetes.core.k8s:
         state: patched
         api_version: apps/v1
@@ -145,4 +142,4 @@
             template:
               metadata:
                 annotations:
-                  restartedAt: "{{ lookup('pipe', 'date +%s') }}"
+                  rollout-restart: "{{ lookup('pipe', 'date +%s') }}"
