@@ -6,13 +6,13 @@
 
   vars:
     ############################################################
-    # TEMPLATE DETAILS
+    # OPENSHIFT TEMPLATE DETAILS
     ############################################################
     template_name: httpd-example
     template_namespace: openshift
 
     ############################################################
-    # SURVEY VARIABLES
+    # SURVEY VARIABLES (REQUIRED)
     ############################################################
     app_name: "{{ app_name }}"
     runtime_namespace: "{{ runtime_namespace }}"
@@ -24,7 +24,6 @@
     # NETWORK
     ############################################################
     app_port: 8080
-    ingress_namespace: openshift-ingress
     route_host: "{{ app_name }}.apps.pgrhoso.dccloud.com"
 
   tasks:
@@ -78,7 +77,7 @@
               termination: edge
 
     ############################################################
-    # 4️⃣ NETWORK POLICY – SURVEY DRIVEN
+    # 4️⃣ NETWORK POLICY – SURVEY DRIVEN (CORRECT)
     ############################################################
     - name: Apply NetworkPolicy (Survey Driven Ingress & Egress)
       community.okd.k8s:
@@ -91,7 +90,7 @@
             name: "{{ app_name }}-network-policy"
           spec:
             ####################################################
-            # APPLY ONLY TO APP PODS
+            # APPLY ONLY TO APPLICATION PODS
             ####################################################
             podSelector:
               matchLabels:
@@ -105,23 +104,44 @@
             # INGRESS – FROM SURVEY
             ####################################################
             ingress:
-              - from: >
-                  {{ ingress_cidrs
-                     | from_yaml
-                     | map('community.general.dict_kv', 'ipBlock', 'cidr')
-                     | list }}
-                ports: "{{ ingress_ports | from_yaml }}"
+              - from:
+                  {% for cidr in ingress_cidrs | from_yaml %}
+                  - ipBlock:
+                      cidr: {{ cidr }}
+                  {% endfor %}
+                ports:
+                  {% for p in ingress_ports | from_yaml %}
+                  - protocol: {{ p.protocol }}
+                    port: {{ p.port }}
+                  {% endfor %}
 
             ####################################################
-            # EGRESS – FROM SURVEY
+            # EGRESS – DNS (MANDATORY)
             ####################################################
             egress:
-              - to: >
-                  {{ egress_cidrs
-                     | from_yaml
-                     | map('community.general.dict_kv', 'ipBlock', 'cidr')
-                     | list }}
-                ports: "{{ egress_ports | from_yaml }}"
+              - to:
+                  - namespaceSelector:
+                      matchLabels:
+                        kubernetes.io/metadata.name: openshift-dns
+                ports:
+                  - protocol: UDP
+                    port: 53
+                  - protocol: TCP
+                    port: 53
+
+              ################################################
+              # EGRESS – FROM SURVEY
+              ################################################
+              - to:
+                  {% for cidr in egress_cidrs | from_yaml %}
+                  - ipBlock:
+                      cidr: {{ cidr }}
+                  {% endfor %}
+                ports:
+                  {% for p in egress_ports | from_yaml %}
+                  - protocol: {{ p.protocol }}
+                    port: {{ p.port }}
+                  {% endfor %}
 
     ############################################################
     # 5️⃣ GUARANTEED NEW POD EVERY RUN
