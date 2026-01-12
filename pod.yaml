@@ -1,12 +1,12 @@
 ---
-- name: Deploy Apache HTTP Server via AAP (New App = New Pod)
+- name: Deploy Apache HTTP Server via AAP (Ingress Allowed, Internet Blocked)
   hosts: localhost
   connection: local
   gather_facts: no
 
   vars:
     ############################################################
-    # OPENSHIFT TEMPLATE DETAILS
+    # TEMPLATE DETAILS
     ############################################################
     template_name: httpd-example
     template_namespace: openshift
@@ -56,7 +56,7 @@
       loop: "{{ apache_template.resources }}"
 
     ############################################################
-    # 3️⃣ Create Route
+    # 3️⃣ Create Route (Ingress)
     ############################################################
     - name: Create OpenShift Route
       community.okd.k8s:
@@ -67,8 +67,6 @@
           kind: Route
           metadata:
             name: "{{ app_name }}"
-            labels:
-              app: "{{ app_name }}"
           spec:
             host: "{{ route_host }}"
             to:
@@ -80,9 +78,9 @@
               termination: edge
 
     ############################################################
-    # 4️⃣ NetworkPolicy for BUILD PODS (ALLOW INTERNET)
+    # 4️⃣ NetworkPolicy – BLOCK INTERNET, ALLOW DNS + GITHUB
     ############################################################
-    - name: Allow internet for build pods
+    - name: Apply NetworkPolicy (App Pods Only)
       community.okd.k8s:
         state: present
         namespace: "{{ runtime_namespace }}"
@@ -90,45 +88,19 @@
           apiVersion: networking.k8s.io/v1
           kind: NetworkPolicy
           metadata:
-            name: allow-build-egress
+            name: "{{ app_name }}-restricted-egress"
           spec:
             podSelector:
               matchLabels:
-                openshift.io/build.name: ""
-            policyTypes:
-              - Egress
-            egress:
-              - to:
-                  - ipBlock:
-                      cidr: 0.0.0.0/0
-                ports:
-                  - protocol: TCP
-                    port: 443
-                  - protocol: UDP
-                    port: 53
-                  - protocol: TCP
-                    port: 53
+                app: "{{ app_name }}"
 
-    ############################################################
-    # 5️⃣ NetworkPolicy for APP PODS (BLOCK INTERNET)
-    ############################################################
-    - name: Block internet for application pods
-      community.okd.k8s:
-        state: present
-        namespace: "{{ runtime_namespace }}"
-        definition:
-          apiVersion: networking.k8s.io/v1
-          kind: NetworkPolicy
-          metadata:
-            name: "{{ app_name }}-deny-internet"
-          spec:
-            podSelector:
-              matchLabels:
-                name: "{{ app_name }}"
             policyTypes:
               - Ingress
               - Egress
 
+            ####################################################
+            # INGRESS: Allow OpenShift Router
+            ####################################################
             ingress:
               - from:
                   - namespaceSelector:
@@ -138,13 +110,39 @@
                   - protocol: TCP
                     port: "{{ app_port }}"
 
+            ####################################################
+            # EGRESS:
+            # ✅ DNS allowed
+            # ✅ HTTPS (GitHub) allowed
+            # ❌ Internet blocked
+            ####################################################
             egress:
-              - to:
-                  - ipBlock:
-                      cidr: 10.0.0.0/8
-              - to:
-                  - ipBlock:
-                      cidr: 172.16.0.0/12
-              - to:
-                  - ipBlock:
-                      cidr: 192.168.0.0/16
+              # DNS
+              - ports:
+                  - protocol: UDP
+                    port: 53
+                  - protocol: TCP
+                    port: 53
+
+              # HTTPS (GitHub)
+              - ports:
+                  - protocol: TCP
+                    port: 443
+
+    ############################################################
+    # 5️⃣ Restart Deployment (Apply Policy)
+    ############################################################
+    - name: Restart deployment to apply NetworkPolicy
+      kubernetes.core.k8s:
+        state: patched
+        api_version: apps/v1
+        kind: Deployment
+        name: "{{ app_name }}"
+        namespace: "{{ runtime_namespace }}"
+        merge_type: strategic-merge
+        definition:
+          spec:
+            template:
+              metadata:
+                annotations:
+                  restartedAt: "{{ lookup('pipe', 'date +%s') }}"
