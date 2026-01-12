@@ -5,28 +5,60 @@
   gather_facts: no
 
   vars:
-    ############################################################
-    # OPENSHIFT TEMPLATE DETAILS
-    ############################################################
     template_name: httpd-example
     template_namespace: openshift
 
-    ############################################################
-    # SURVEY VARIABLES (REQUIRED)
-    ############################################################
     app_name: "{{ app_name }}"
     runtime_namespace: "{{ runtime_namespace }}"
     httpd_version: "{{ httpd_version }}"
     memory_limit: "{{ memory_limit }}"
     git_repo_url: "{{ git_repo_url }}"
 
-    ############################################################
-    # NETWORK
-    ############################################################
     app_port: 8080
     route_host: "{{ app_name }}.apps.pgrhoso.dccloud.com"
 
   tasks:
+
+    ############################################################
+    # 0️⃣ BUILD NETWORK POLICY LISTS FROM SURVEY (CRITICAL FIX)
+    ############################################################
+    - name: Build ingress ipBlock list
+      set_fact:
+        ingress_from_blocks: >-
+          {{
+            ingress_cidrs
+            | from_yaml
+            | map('community.general.dict_kv', 'cidr')
+            | map('combine', {'ipBlock': {}})
+            | map('combine', {'ipBlock': {'cidr': item.cidr}}, recursive=True)
+            | list
+          }}
+      loop: "{{ ingress_cidrs | from_yaml }}"
+      loop_control:
+        loop_var: item
+
+    - name: Build egress ipBlock list
+      set_fact:
+        egress_to_blocks: >-
+          {{
+            egress_cidrs
+            | from_yaml
+            | map('community.general.dict_kv', 'cidr')
+            | map('combine', {'ipBlock': {}})
+            | map('combine', {'ipBlock': {'cidr': item.cidr}}, recursive=True)
+            | list
+          }}
+      loop: "{{ egress_cidrs | from_yaml }}"
+      loop_control:
+        loop_var: item
+
+    - name: Parse ingress ports
+      set_fact:
+        ingress_ports_parsed: "{{ ingress_ports | from_yaml }}"
+
+    - name: Parse egress ports
+      set_fact:
+        egress_ports_parsed: "{{ egress_ports | from_yaml }}"
 
     ############################################################
     # 1️⃣ PROCESS APACHE TEMPLATE
@@ -77,9 +109,9 @@
               termination: edge
 
     ############################################################
-    # 4️⃣ NETWORK POLICY – SURVEY DRIVEN (FIXED INDENTATION)
+    # 4️⃣ APPLY NETWORK POLICY (SURVEY DRIVEN)
     ############################################################
-    - name: Apply NetworkPolicy (Survey Driven Ingress & Egress)
+    - name: Apply NetworkPolicy
       community.okd.k8s:
         state: present
         namespace: "{{ runtime_namespace }}"
@@ -89,9 +121,6 @@
           metadata:
             name: "{{ app_name }}-network-policy"
           spec:
-            ####################################################
-            # APPLY ONLY TO APPLICATION PODS
-            ####################################################
             podSelector:
               matchLabels:
                 name: "{{ app_name }}"
@@ -100,26 +129,12 @@
               - Ingress
               - Egress
 
-            ####################################################
-            # INGRESS – FROM SURVEY
-            ####################################################
             ingress:
-              - from:
-{% for cidr in ingress_cidrs | from_yaml %}
-                  - ipBlock:
-                      cidr: {{ cidr }}
-{% endfor %}
-                ports:
-{% for p in ingress_ports | from_yaml %}
-                  - protocol: {{ p.protocol }}
-                    port: {{ p.port }}
-{% endfor %}
+              - from: "{{ ingress_from_blocks }}"
+                ports: "{{ ingress_ports_parsed }}"
 
-            ####################################################
-            # EGRESS
-            ####################################################
             egress:
-              # DNS (MANDATORY)
+              # DNS ALWAYS ALLOWED
               - to:
                   - namespaceSelector:
                       matchLabels:
@@ -130,17 +145,9 @@
                   - protocol: TCP
                     port: 53
 
-              # FROM SURVEY
-              - to:
-{% for cidr in egress_cidrs | from_yaml %}
-                  - ipBlock:
-                      cidr: {{ cidr }}
-{% endfor %}
-                ports:
-{% for p in egress_ports | from_yaml %}
-                  - protocol: {{ p.protocol }}
-                    port: {{ p.port }}
-{% endfor %}
+              # SURVEY-DRIVEN EGRESS
+              - to: "{{ egress_to_blocks }}"
+                ports: "{{ egress_ports_parsed }}"
 
     ############################################################
     # 5️⃣ GUARANTEED NEW POD EVERY RUN
