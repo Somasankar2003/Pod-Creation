@@ -5,50 +5,29 @@
   gather_facts: no
 
   vars:
+    ############################################################
+    # TEMPLATE DETAILS
+    ############################################################
     template_name: httpd-example
     template_namespace: openshift
 
+    ############################################################
+    # SURVEY VARIABLES
+    ############################################################
     app_name: "{{ app_name }}"
     runtime_namespace: "{{ runtime_namespace }}"
     httpd_version: "{{ httpd_version }}"
     memory_limit: "{{ memory_limit }}"
     git_repo_url: "{{ git_repo_url }}"
 
+    ############################################################
+    # NETWORK
+    ############################################################
     app_port: 8080
+    ingress_namespace: openshift-ingress
     route_host: "{{ app_name }}.apps.pgrhoso.dccloud.com"
 
   tasks:
-
-    ############################################################
-    # 0️⃣ PARSE SURVEY INPUTS (CRITICAL FIX)
-    ############################################################
-    - name: Parse ingress CIDRs
-      set_fact:
-        ingress_from_blocks: >-
-          {{
-            ingress_cidrs | from_yaml
-            | map('regex_replace', '^(.*)$', '{"ipBlock": {"cidr": "\\1"}}')
-            | map('from_yaml')
-            | list
-          }}
-
-    - name: Parse egress CIDRs
-      set_fact:
-        egress_to_blocks: >-
-          {{
-            egress_cidrs | from_yaml
-            | map('regex_replace', '^(.*)$', '{"ipBlock": {"cidr": "\\1"}}')
-            | map('from_yaml')
-            | list
-          }}
-
-    - name: Parse ingress ports
-      set_fact:
-        ingress_ports_parsed: "{{ ingress_ports | from_yaml }}"
-
-    - name: Parse egress ports
-      set_fact:
-        egress_ports_parsed: "{{ egress_ports | from_yaml }}"
 
     ############################################################
     # 1️⃣ PROCESS APACHE TEMPLATE
@@ -77,7 +56,7 @@
       loop: "{{ apache_template.resources }}"
 
     ############################################################
-    # 3️⃣ CREATE ROUTE
+    # 3️⃣ CREATE ROUTE (INGRESS)
     ############################################################
     - name: Create OpenShift Route
       community.okd.k8s:
@@ -99,9 +78,9 @@
               termination: edge
 
     ############################################################
-    # 4️⃣ APPLY NETWORK POLICY (SURVEY DRIVEN)
+    # 4️⃣ NETWORK POLICY – SURVEY DRIVEN
     ############################################################
-    - name: Apply NetworkPolicy
+    - name: Apply NetworkPolicy (Survey Driven Ingress & Egress)
       community.okd.k8s:
         state: present
         namespace: "{{ runtime_namespace }}"
@@ -111,6 +90,9 @@
           metadata:
             name: "{{ app_name }}-network-policy"
           spec:
+            ####################################################
+            # APPLY ONLY TO APP PODS
+            ####################################################
             podSelector:
               matchLabels:
                 name: "{{ app_name }}"
@@ -119,25 +101,27 @@
               - Ingress
               - Egress
 
+            ####################################################
+            # INGRESS – FROM SURVEY
+            ####################################################
             ingress:
-              - from: "{{ ingress_from_blocks }}"
-                ports: "{{ ingress_ports_parsed }}"
+              - from: >
+                  {{ ingress_cidrs
+                     | from_yaml
+                     | map('community.general.dict_kv', 'ipBlock', 'cidr')
+                     | list }}
+                ports: "{{ ingress_ports | from_yaml }}"
 
+            ####################################################
+            # EGRESS – FROM SURVEY
+            ####################################################
             egress:
-              # DNS ALWAYS ALLOWED
-              - to:
-                  - namespaceSelector:
-                      matchLabels:
-                        kubernetes.io/metadata.name: openshift-dns
-                ports:
-                  - protocol: UDP
-                    port: 53
-                  - protocol: TCP
-                    port: 53
-
-              # SURVEY-DRIVEN EGRESS
-              - to: "{{ egress_to_blocks }}"
-                ports: "{{ egress_ports_parsed }}"
+              - to: >
+                  {{ egress_cidrs
+                     | from_yaml
+                     | map('community.general.dict_kv', 'ipBlock', 'cidr')
+                     | list }}
+                ports: "{{ egress_ports | from_yaml }}"
 
     ############################################################
     # 5️⃣ GUARANTEED NEW POD EVERY RUN
