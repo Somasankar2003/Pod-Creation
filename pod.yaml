@@ -1,5 +1,5 @@
 ---
-- name: Deploy Apache HTTP Server via AAP (Same App Name → New Pod)
+- name: Deploy Apache HTTP Server via AAP (Same App Name → New Pod Visible)
   hosts: localhost
   connection: local
   gather_facts: no
@@ -12,7 +12,7 @@
     template_namespace: openshift
 
     ############################################################
-    # SURVEY INPUTS
+    # SURVEY VARIABLES
     ############################################################
     app_name: "{{ app_name }}"
     runtime_namespace: "{{ runtime_namespace }}"
@@ -78,9 +78,9 @@
               termination: edge
 
     ############################################################
-    # 4️⃣ NETWORK POLICY – INTERNET RESTRICTED
+    # 4️⃣ NETWORK POLICY – APP PODS ONLY
     ############################################################
-    - name: Apply NetworkPolicy (DNS + HTTPS only)
+    - name: Apply NetworkPolicy (Restrict Internet)
       community.okd.k8s:
         state: present
         namespace: "{{ runtime_namespace }}"
@@ -90,12 +90,17 @@
           metadata:
             name: "{{ app_name }}-restricted-egress"
           spec:
-            podSelector: {}   # applies to ALL pods of this app
+            podSelector:
+              matchLabels:
+                name: "{{ app_name }}"
+
             policyTypes:
               - Ingress
               - Egress
 
-            # Ingress: only from OpenShift router
+            ####################################################
+            # INGRESS – OPENSHIFT ROUTER
+            ####################################################
             ingress:
               - from:
                   - namespaceSelector:
@@ -105,7 +110,9 @@
                   - protocol: TCP
                     port: "{{ app_port }}"
 
-            # Egress: DNS + HTTPS ONLY
+            ####################################################
+            # EGRESS – DNS + HTTPS ONLY
+            ####################################################
             egress:
               - to:
                   - ipBlock:
@@ -124,9 +131,9 @@
                     port: 443
 
     ############################################################
-    # 5️⃣ FORCE ROLLOUT → ALWAYS CREATE NEW POD
+    # 5️⃣ SCALE UP → FORCE NEW POD CREATION
     ############################################################
-    - name: Force rollout to create NEW pod (same app name)
+    - name: Scale deployment to 2 replicas (create new pod)
       kubernetes.core.k8s:
         state: patched
         api_version: apps/v1
@@ -136,7 +143,19 @@
         merge_type: strategic-merge
         definition:
           spec:
-            template:
-              metadata:
-                annotations:
-                  rollout-trigger: "{{ lookup('pipe', 'date +%s') }}"
+            replicas: 2
+
+    ############################################################
+    # 6️⃣ SCALE BACK → KEEP ONLY NEW POD
+    ############################################################
+    - name: Scale deployment back to 1 replica
+      kubernetes.core.k8s:
+        state: patched
+        api_version: apps/v1
+        kind: Deployment
+        name: "{{ app_name }}"
+        namespace: "{{ runtime_namespace }}"
+        merge_type: strategic-merge
+        definition:
+          spec:
+            replicas: 1
