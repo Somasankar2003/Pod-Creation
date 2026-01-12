@@ -12,7 +12,7 @@
     template_namespace: openshift
 
     ############################################################
-    # SURVEY VARIABLES (YOU PROVIDE)
+    # SURVEY VARIABLES
     ############################################################
     app_name: "{{ app_name }}"
     runtime_namespace: "{{ runtime_namespace }}"
@@ -78,9 +78,9 @@
               termination: edge
 
     ############################################################
-    # 4️⃣ NETWORK POLICY – APP PODS ONLY
+    # 4️⃣ NETWORK POLICY – CORRECT & SECURE
     ############################################################
-    - name: Apply NetworkPolicy (Restrict Internet, Allow DNS + GitHub)
+    - name: Apply NetworkPolicy (DNS + GitHub ONLY)
       community.okd.k8s:
         state: present
         namespace: "{{ runtime_namespace }}"
@@ -90,9 +90,6 @@
           metadata:
             name: "{{ app_name }}-restricted-egress"
           spec:
-            ####################################################
-            # APPLY ONLY TO APPLICATION PODS
-            ####################################################
             podSelector:
               matchLabels:
                 name: "{{ app_name }}"
@@ -102,7 +99,7 @@
               - Egress
 
             ####################################################
-            # INGRESS – FROM OPENSHIFT ROUTER
+            # INGRESS – OpenShift Router ONLY
             ####################################################
             ingress:
               - from:
@@ -127,16 +124,20 @@
                   - protocol: TCP
                     port: 53
 
-              # HTTPS (GitHub, image pulls)
+              # GitHub ONLY (no Google, no internet)
               - to:
                   - ipBlock:
-                      cidr: 0.0.0.0/0
+                      cidr: 140.82.0.0/16
+                  - ipBlock:
+                      cidr: 192.30.252.0/22
+                  - ipBlock:
+                      cidr: 185.199.108.0/22
                 ports:
                   - protocol: TCP
                     port: 443
 
     ############################################################
-    # 5️⃣ SCALE DEPLOYMENT → GUARANTEED NEW POD
+    # 5️⃣ SCALE DEPLOYMENT → NEW POD CREATED
     ############################################################
     - name: Scale deployment to create NEW pod
       kubernetes.core.k8s:
