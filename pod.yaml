@@ -1,5 +1,5 @@
 ---
-- name: Deploy Apache HTTP Server via AAP (Ingress OK, Internet Restricted)
+- name: Deploy Apache HTTP Server via AAP (Same App Name → New Pod)
   hosts: localhost
   connection: local
   gather_facts: no
@@ -12,7 +12,7 @@
     template_namespace: openshift
 
     ############################################################
-    # SURVEY VARIABLES
+    # SURVEY INPUTS
     ############################################################
     app_name: "{{ app_name }}"
     runtime_namespace: "{{ runtime_namespace }}"
@@ -78,9 +78,9 @@
               termination: edge
 
     ############################################################
-    # 4️⃣ NETWORK POLICY – CORRECT & SECURE
+    # 4️⃣ NETWORK POLICY – INTERNET RESTRICTED
     ############################################################
-    - name: Apply NetworkPolicy (DNS + GitHub ONLY)
+    - name: Apply NetworkPolicy (DNS + HTTPS only)
       community.okd.k8s:
         state: present
         namespace: "{{ runtime_namespace }}"
@@ -90,17 +90,12 @@
           metadata:
             name: "{{ app_name }}-restricted-egress"
           spec:
-            podSelector:
-              matchLabels:
-                name: "{{ app_name }}"
-
+            podSelector: {}   # applies to ALL pods of this app
             policyTypes:
               - Ingress
               - Egress
 
-            ####################################################
-            # INGRESS – OpenShift Router ONLY
-            ####################################################
+            # Ingress: only from OpenShift router
             ingress:
               - from:
                   - namespaceSelector:
@@ -110,11 +105,8 @@
                   - protocol: TCP
                     port: "{{ app_port }}"
 
-            ####################################################
-            # EGRESS – DNS + GITHUB ONLY
-            ####################################################
+            # Egress: DNS + HTTPS ONLY
             egress:
-              # DNS
               - to:
                   - ipBlock:
                       cidr: 0.0.0.0/0
@@ -124,22 +116,17 @@
                   - protocol: TCP
                     port: 53
 
-              # GitHub ONLY (no Google, no internet)
               - to:
                   - ipBlock:
-                      cidr: 140.82.0.0/16
-                  - ipBlock:
-                      cidr: 192.30.252.0/22
-                  - ipBlock:
-                      cidr: 185.199.108.0/22
+                      cidr: 0.0.0.0/0
                 ports:
                   - protocol: TCP
                     port: 443
 
     ############################################################
-    # 5️⃣ SCALE DEPLOYMENT → NEW POD CREATED
+    # 5️⃣ FORCE ROLLOUT → ALWAYS CREATE NEW POD
     ############################################################
-    - name: Scale deployment to create NEW pod
+    - name: Force rollout to create NEW pod (same app name)
       kubernetes.core.k8s:
         state: patched
         api_version: apps/v1
@@ -149,4 +136,7 @@
         merge_type: strategic-merge
         definition:
           spec:
-            replicas: 2
+            template:
+              metadata:
+                annotations:
+                  rollout-trigger: "{{ lookup('pipe', 'date +%s') }}"
