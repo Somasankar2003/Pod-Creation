@@ -1,5 +1,5 @@
 ---
-- name: Deploy Apache HTTP Server via AAP (Survey + Robust NetworkPolicy)
+- name: Deploy Apache HTTP Server via AAP (Survey + Strict NetworkPolicy)
   hosts: localhost
   connection: local
   gather_facts: no
@@ -14,11 +14,17 @@
     memory_limit: "{{ memory_limit }}"
     git_repo_url: "{{ git_repo_url }}"
 
-    ingress_cidrs: "{{ ingress_cidrs }}"     # 0.0.0.0/0
-    ingress_ports: "{{ ingress_ports }}"     # TCP:8080
-    egress_cidrs: "{{ egress_cidrs }}"       # 0.0.0.0/0
-    egress_ports: "{{ egress_ports }}"       # UDP:53, TCP:53, TCP:443
+    # Survey-driven (CSV / single-line)
+    ingress_ports: "{{ ingress_ports }}"          # TCP:8080
+    ingress_cidrs: "{{ ingress_cidrs }}"          # 0.0.0.0/0 or 10.68.0.0/16
+    egress_cidrs: "{{ egress_cidrs }}"            # allowed external CIDRs
+    egress_ports: "{{ egress_ports }}"            # TCP:443
 
+    # DNS (survey or defaults)
+    dns_service_cidr: "{{ dns_service_cidr | default('172.30.0.0/16') }}"
+    dns_node_local_ip: "{{ dns_node_local_ip | default('169.254.0.5/32') }}"
+
+    # Fixed OpenShift values
     template_name: httpd-example
     template_namespace: openshift
     app_port: 8080
@@ -27,7 +33,7 @@
   tasks:
 
     ############################################################
-    # 1️⃣ PROCESS TEMPLATE
+    # 1️⃣ PROCESS APACHE TEMPLATE
     ############################################################
     - name: Process Apache HTTPD template
       community.okd.openshift_process:
@@ -43,7 +49,7 @@
       register: apache_template
 
     ############################################################
-    # 2️⃣ APPLY RESOURCES
+    # 2️⃣ APPLY GENERATED RESOURCES
     ############################################################
     - name: Create application resources
       community.okd.k8s:
@@ -53,71 +59,55 @@
       loop: "{{ apache_template.resources }}"
 
     ############################################################
-    # 3️⃣ CREATE ROUTE
+    # 3️⃣ PARSE SURVEY PORTS
     ############################################################
-    - name: Create OpenShift Route
-      community.okd.k8s:
-        state: present
-        namespace: "{{ runtime_namespace }}"
-        definition:
-          apiVersion: route.openshift.io/v1
-          kind: Route
-          metadata:
-            name: "{{ app_name }}"
-          spec:
-            host: "{{ route_host }}"
-            to:
-              kind: Service
-              name: "{{ app_name }}"
-            port:
-              targetPort: "{{ app_port }}"
-            tls:
-              termination: edge
-
-    ############################################################
-    # 4️⃣ BUILD NETWORK POLICY STRUCTURES (NATIVE, SAFE)
-    ############################################################
-
-    - name: Init ingress ports list
+    - name: Init parsed port lists
       set_fact:
         ingress_ports_parsed: []
-
-    - name: Init egress ports list
-      set_fact:
         egress_ports_parsed: []
-
-    - name: Init ingress cidr list
-      set_fact:
-        ingress_from_blocks: []
-
-    - name: Init egress cidr list
-      set_fact:
-        egress_to_blocks: []
 
     - name: Build ingress ports
       set_fact:
-        ingress_ports_parsed: "{{ ingress_ports_parsed + [ {'protocol': item.split(':')[0] | upper, 'port': item.split(':')[1] | int } ] }}"
+        ingress_ports_parsed: >-
+          {{ ingress_ports_parsed
+             + [ {'protocol': item.split(':')[0] | upper,
+                  'port': item.split(':')[1] | int } ] }}
       loop: "{{ ingress_ports.split(',') | map('trim') | list }}"
 
     - name: Build egress ports
       set_fact:
-        egress_ports_parsed: "{{ egress_ports_parsed + [ {'protocol': item.split(':')[0] | upper, 'port': item.split(':')[1] | int } ] }}"
+        egress_ports_parsed: >-
+          {{ egress_ports_parsed
+             + [ {'protocol': item.split(':')[0] | upper,
+                  'port': item.split(':')[1] | int } ] }}
       loop: "{{ egress_ports.split(',') | map('trim') | list }}"
+
+    ############################################################
+    # 4️⃣ PARSE CIDRs (INGRESS + EGRESS)
+    ############################################################
+    - name: Init CIDR lists
+      set_fact:
+        ingress_from_blocks: []
+        egress_to_blocks: []
 
     - name: Build ingress CIDRs
       set_fact:
-        ingress_from_blocks: "{{ ingress_from_blocks + [ {'ipBlock': {'cidr': item}} ] }}"
+        ingress_from_blocks: >-
+          {{ ingress_from_blocks
+             + [ {'ipBlock': {'cidr': item}} ] }}
       loop: "{{ ingress_cidrs.split(',') | map('trim') | list }}"
 
     - name: Build egress CIDRs
       set_fact:
-        egress_to_blocks: "{{ egress_to_blocks + [ {'ipBlock': {'cidr': item}} ] }}"
+        egress_to_blocks: >-
+          {{ egress_to_blocks
+             + [ {'ipBlock': {'cidr': item}} ] }}
       loop: "{{ egress_cidrs.split(',') | map('trim') | list }}"
 
     ############################################################
     # 5️⃣ APPLY NETWORK POLICY
     ############################################################
-    - name: Apply NetworkPolicy (FINAL SAFE VERSION)
+    - name: Apply NetworkPolicy
       community.okd.k8s:
         state: present
         namespace: "{{ runtime_namespace }}"
@@ -130,13 +120,43 @@
             podSelector:
               matchLabels:
                 name: "{{ app_name }}"
+
             policyTypes:
               - Ingress
               - Egress
+
+            ########################
+            # INGRESS (CIDR BASED)
+            ########################
             ingress:
               - from: "{{ ingress_from_blocks }}"
                 ports: "{{ ingress_ports_parsed }}"
+
+            ########################
+            # EGRESS (STRICT)
+            ########################
             egress:
+              # DNS via service network
+              - to:
+                  - ipBlock:
+                      cidr: "{{ dns_service_cidr }}"
+                ports:
+                  - protocol: UDP
+                    port: 53
+                  - protocol: TCP
+                    port: 53
+
+              # DNS via node-local cache
+              - to:
+                  - ipBlock:
+                      cidr: "{{ dns_node_local_ip }}"
+                ports:
+                  - protocol: UDP
+                    port: 53
+                  - protocol: TCP
+                    port: 53
+
+              # ONLY ALLOWED CIDRs
               - to: "{{ egress_to_blocks }}"
                 ports: "{{ egress_ports_parsed }}"
 
