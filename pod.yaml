@@ -27,34 +27,41 @@
   tasks:
 
     ############################################################
-    # 1️⃣ PROCESS APACHE TEMPLATE  (FIXED MODULE)
+    # 1️⃣ PROCESS TEMPLATE USING oc process
     ############################################################
-    - name: Process Apache HTTPD template
-      community.okd.k8s_process:
-        name: "{{ template_name }}"
-        namespace: "{{ template_namespace }}"
-        namespace_target: "{{ runtime_namespace }}"
-        parameters:
-          NAME: "{{ app_name }}"
-          NAMESPACE: "{{ template_namespace }}"
-          HTTPD_VERSION: "{{ httpd_version }}"
-          MEMORY_LIMIT: "{{ memory_limit }}"
-          SOURCE_REPOSITORY_URL: "{{ git_repo_url }}"
-      register: apache_template
+    - name: Process Apache HTTPD template using oc
+      ansible.builtin.command: >
+        oc process {{ template_name }}
+        -n {{ template_namespace }}
+        -p NAME={{ app_name }}
+        -p NAMESPACE={{ runtime_namespace }}
+        -p HTTPD_VERSION={{ httpd_version }}
+        -p MEMORY_LIMIT={{ memory_limit }}
+        -p SOURCE_REPOSITORY_URL={{ git_repo_url }}
+      register: processed_template
 
     ############################################################
-    # 2️⃣ APPLY GENERATED RESOURCES
+    # 2️⃣ LOAD GENERATED YAML INTO VARIABLES
     ############################################################
-    - name: Create application resources
-      community.okd.k8s:
+    - name: Convert processed template to YAML
+      ansible.builtin.set_fact:
+        apache_objects: "{{ processed_template.stdout | from_yaml_all | list }}"
+
+    ############################################################
+    # 3️⃣ APPLY RESOURCES USING K8S MODULE
+    ############################################################
+    - name: Apply Apache resources
+      kubernetes.core.k8s:
         state: present
         namespace: "{{ runtime_namespace }}"
         definition: "{{ item }}"
-      loop: "{{ apache_template.resources }}"
+      loop: "{{ apache_objects }}"
 
     ############################################################
-    # 3️⃣ PARSE SURVEY PORTS
+    # OTHER LOGIC (INGRESS/EGRESS, NETWORKPOLICY, ROLLOUT)
+    # KEEPING YOUR ORIGINAL LOGIC AS-IS
     ############################################################
+
     - name: Init parsed port lists
       set_fact:
         ingress_ports_parsed: []
@@ -76,9 +83,6 @@
                   'port': item.split(':')[1] | int } ] }}
       loop: "{{ egress_ports.split(',') | map('trim') | list }}"
 
-    ############################################################
-    # 4️⃣ PARSE CIDRs
-    ############################################################
     - name: Init CIDR lists
       set_fact:
         ingress_from_blocks: []
@@ -98,11 +102,8 @@
              + [ {'ipBlock': {'cidr': item}} ] }}
       loop: "{{ egress_cidrs.split(',') | map('trim') | list }}"
 
-    ############################################################
-    # 5️⃣ APPLY NETWORK POLICY
-    ############################################################
     - name: Apply NetworkPolicy
-      community.okd.k8s:
+      kubernetes.core.k8s:
         state: present
         namespace: "{{ runtime_namespace }}"
         definition:
@@ -117,11 +118,9 @@
             policyTypes:
               - Ingress
               - Egress
-
             ingress:
               - from: "{{ ingress_from_blocks }}"
                 ports: "{{ ingress_ports_parsed }}"
-
             egress:
               - to:
                   - ipBlock:
@@ -131,7 +130,6 @@
                     port: 53
                   - protocol: TCP
                     port: 53
-
               - to:
                   - ipBlock:
                       cidr: "{{ dns_node_local_ip }}"
@@ -140,13 +138,9 @@
                     port: 53
                   - protocol: TCP
                     port: 53
-
               - to: "{{ egress_to_blocks }}"
                 ports: "{{ egress_ports_parsed }}"
 
-    ############################################################
-    # 6️⃣ FORCE POD RESTART
-    ############################################################
     - name: Force rollout restart
       kubernetes.core.k8s:
         state: patched
