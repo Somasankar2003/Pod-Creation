@@ -4,9 +4,6 @@
   connection: local
   gather_facts: no
 
-  ############################################################
-  # SURVEY VARIABLES (PLAIN STRINGS)
-  ############################################################
   vars:
     app_name: "{{ app_name }}"
     runtime_namespace: "{{ runtime_namespace }}"
@@ -14,17 +11,17 @@
     memory_limit: "{{ memory_limit }}"
     git_repo_url: "{{ git_repo_url }}"
 
-    # Survey-driven (CSV)
-    ingress_ports: "{{ ingress_ports }}"          # TCP:8080
-    ingress_cidrs: "{{ ingress_cidrs }}"          # 0.0.0.0/0 or internal CIDRs
-    egress_cidrs: "{{ egress_cidrs }}"            # allowed external CIDRs
-    egress_ports: "{{ egress_ports }}"            # TCP:443
+    # Survey CSV inputs
+    ingress_ports: "{{ ingress_ports }}"
+    ingress_cidrs: "{{ ingress_cidrs }}"
+    egress_cidrs: "{{ egress_cidrs }}"
+    egress_ports: "{{ egress_ports }}"
 
-    # DNS (stable defaults, overridable)
+    # DNS defaults
     dns_service_cidr: "{{ dns_service_cidr | default('172.30.0.0/16') }}"
     dns_node_local_ip: "{{ dns_node_local_ip | default('169.254.0.5/32') }}"
 
-    # Fixed OpenShift values
+    # Template constants
     template_name: httpd-example
     template_namespace: openshift
     app_port: 8080
@@ -33,14 +30,22 @@
   tasks:
 
     ############################################################
-    # 1️⃣ PROCESS APACHE TEMPLATE
+    # 1️⃣ PROCESS TEMPLATE USING k8s_raw
     ############################################################
-    - name: Process Apache HTTPD template
-      community.okd.openshift_process:
+    - name: Load OpenShift template
+      kubernetes.core.k8s_info:
+        api_version: template.openshift.io/v1
+        kind: Template
         name: "{{ template_name }}"
         namespace: "{{ template_namespace }}"
-        namespace_target: "{{ runtime_namespace }}"
-        parameters:
+      register: tmpl
+
+    - name: Process template into objects
+      kubernetes.core.k8s_raw:
+        state: processed
+        resource_definition: "{{ tmpl.resources[0] }}"
+        namespace: "{{ runtime_namespace }}"
+        template_parameters:
           NAME: "{{ app_name }}"
           NAMESPACE: "{{ template_namespace }}"
           HTTPD_VERSION: "{{ httpd_version }}"
@@ -51,64 +56,52 @@
     ############################################################
     # 2️⃣ APPLY GENERATED RESOURCES
     ############################################################
-    - name: Create application resources
-      community.okd.k8s:
+    - name: Apply resources from processed template
+      kubernetes.core.k8s:
         state: present
         namespace: "{{ runtime_namespace }}"
         definition: "{{ item }}"
-      loop: "{{ apache_template.resources }}"
+      loop: "{{ apache_template['result']['items'] }}"
 
     ############################################################
     # 3️⃣ PARSE PORTS
     ############################################################
-    - name: Init parsed port lists
-      set_fact:
+    - set_fact:
         ingress_ports_parsed: []
         egress_ports_parsed: []
 
-    - name: Build ingress ports
+    - name: Parse ingress ports
       set_fact:
-        ingress_ports_parsed: >-
-          {{ ingress_ports_parsed +
-             [ {'protocol': item.split(':')[0] | upper,
-                'port': item.split(':')[1] | int } ] }}
-      loop: "{{ ingress_ports.split(',') | map('trim') | list }}"
+        ingress_ports_parsed: "{{ ingress_ports_parsed + [ {'protocol': item.split(':')[0] | upper, 'port': item.split(':')[1] | int } ] }}"
+      loop: "{{ ingress_ports.split(',') | map('trim') }}"
 
-    - name: Build egress ports
+    - name: Parse egress ports
       set_fact:
-        egress_ports_parsed: >-
-          {{ egress_ports_parsed +
-             [ {'protocol': item.split(':')[0] | upper,
-                'port': item.split(':')[1] | int } ] }}
-      loop: "{{ egress_ports.split(',') | map('trim') | list }}"
+        egress_ports_parsed: "{{ egress_ports_parsed + [ {'protocol': item.split(':')[0] | upper, 'port': item.split(':')[1] | int } ] }}"
+      loop: "{{ egress_ports.split(',') | map('trim') }}"
 
     ############################################################
     # 4️⃣ PARSE CIDRs
     ############################################################
-    - name: Init CIDR lists
-      set_fact:
+    - set_fact:
         ingress_from_blocks: []
         egress_to_blocks: []
 
-    - name: Build ingress CIDRs
+    - name: Parse ingress CIDRs
       set_fact:
-        ingress_from_blocks: >-
-          {{ ingress_from_blocks +
-             [ {'ipBlock': {'cidr': item}} ] }}
-      loop: "{{ ingress_cidrs.split(',') | map('trim') | list }}"
+        ingress_from_blocks: "{{ ingress_from_blocks + [ {'ipBlock': {'cidr': item}} ] }}"
+      loop: "{{ ingress_cidrs.split(',') | map('trim') }}"
 
-    - name: Build egress CIDRs
+    - name: Parse egress CIDRs
       set_fact:
-        egress_to_blocks: >-
-          {{ egress_to_blocks +
-             [ {'ipBlock': {'cidr': item}} ] }}
-      loop: "{{ egress_cidrs.split(',') | map('trim') | list }}"
+        egress_to_blocks: "{{ egress_to_blocks + [ {'ipBlock': {'cidr': item}} ] }}"
+      loop: "{{ egress_cidrs.split(',') | map('trim') }}"
 
     ############################################################
     # 5️⃣ APPLY NETWORK POLICY
     ############################################################
     - name: Apply NetworkPolicy
-      community.okd.k8s:
+      kubernetes.core.k8s:
         state: present
         namespace: "{{ runtime_namespace }}"
         definition:
@@ -124,14 +117,11 @@
               - Ingress
               - Egress
 
-            # INGRESS (CIDR BASED)
             ingress:
               - from: "{{ ingress_from_blocks }}"
                 ports: "{{ ingress_ports_parsed }}"
 
-            # EGRESS (STRICT)
             egress:
-              # DNS via service network
               - to:
                   - ipBlock:
                       cidr: "{{ dns_service_cidr }}"
@@ -140,8 +130,6 @@
                     port: 53
                   - protocol: TCP
                     port: 53
-
-              # DNS via node-local cache
               - to:
                   - ipBlock:
                       cidr: "{{ dns_node_local_ip }}"
@@ -150,22 +138,19 @@
                     port: 53
                   - protocol: TCP
                     port: 53
-
-              # ONLY ALLOWED CIDRs
               - to: "{{ egress_to_blocks }}"
                 ports: "{{ egress_ports_parsed }}"
 
     ############################################################
-    # 6️⃣ FORCE POD RESTART (FIXED)
+    # 6️⃣ FORCE POD RESTART
     ############################################################
-    - name: Force rollout restart (label-based, guaranteed)
+    - name: Force Deployment Restart (New Pod Every Run)
       kubernetes.core.k8s:
         state: patched
         api_version: apps/v1
         kind: Deployment
+        name: "{{ app_name }}"
         namespace: "{{ runtime_namespace }}"
-        label_selectors:
-          - "name={{ app_name }}"
         merge_type: strategic-merge
         definition:
           spec:
