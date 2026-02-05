@@ -4,9 +4,6 @@
   connection: local
   gather_facts: no
 
-  ############################################################
-  # SURVEY VARIABLES (PLAIN STRINGS)
-  ############################################################
   vars:
     app_name: "{{ app_name }}"
     runtime_namespace: "{{ runtime_namespace }}"
@@ -14,17 +11,14 @@
     memory_limit: "{{ memory_limit }}"
     git_repo_url: "{{ git_repo_url }}"
 
-    # Survey-driven (CSV / single-line)
-    ingress_ports: "{{ ingress_ports }}"          # TCP:8080
-    ingress_cidrs: "{{ ingress_cidrs }}"          # 0.0.0.0/0 or 10.68.0.0/16
-    egress_cidrs: "{{ egress_cidrs }}"            # allowed external CIDRs
-    egress_ports: "{{ egress_ports }}"            # TCP:443
+    ingress_ports: "{{ ingress_ports }}"
+    ingress_cidrs: "{{ ingress_cidrs }}"
+    egress_cidrs: "{{ egress_cidrs }}"
+    egress_ports: "{{ egress_ports }}"
 
-    # DNS (survey or defaults)
     dns_service_cidr: "{{ dns_service_cidr | default('172.30.0.0/16') }}"
     dns_node_local_ip: "{{ dns_node_local_ip | default('169.254.0.5/32') }}"
 
-    # Fixed OpenShift values
     template_name: httpd-example
     template_namespace: openshift
     app_port: 8080
@@ -33,10 +27,10 @@
   tasks:
 
     ############################################################
-    # 1️⃣ PROCESS APACHE TEMPLATE
+    # 1️⃣ PROCESS APACHE TEMPLATE  (FIXED MODULE)
     ############################################################
     - name: Process Apache HTTPD template
-      community.okd.openshift_process:
+      community.okd.k8s_process:
         name: "{{ template_name }}"
         namespace: "{{ template_namespace }}"
         namespace_target: "{{ runtime_namespace }}"
@@ -83,7 +77,7 @@
       loop: "{{ egress_ports.split(',') | map('trim') | list }}"
 
     ############################################################
-    # 4️⃣ PARSE CIDRs (INGRESS + EGRESS)
+    # 4️⃣ PARSE CIDRs
     ############################################################
     - name: Init CIDR lists
       set_fact:
@@ -120,23 +114,15 @@
             podSelector:
               matchLabels:
                 name: "{{ app_name }}"
-
             policyTypes:
               - Ingress
               - Egress
 
-            ########################
-            # INGRESS (CIDR BASED)
-            ########################
             ingress:
               - from: "{{ ingress_from_blocks }}"
                 ports: "{{ ingress_ports_parsed }}"
 
-            ########################
-            # EGRESS (STRICT)
-            ########################
             egress:
-              # DNS via service network
               - to:
                   - ipBlock:
                       cidr: "{{ dns_service_cidr }}"
@@ -146,7 +132,6 @@
                   - protocol: TCP
                     port: 53
 
-              # DNS via node-local cache
               - to:
                   - ipBlock:
                       cidr: "{{ dns_node_local_ip }}"
@@ -156,7 +141,6 @@
                   - protocol: TCP
                     port: 53
 
-              # ONLY ALLOWED CIDRs
               - to: "{{ egress_to_blocks }}"
                 ports: "{{ egress_ports_parsed }}"
 
