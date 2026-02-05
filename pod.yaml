@@ -25,40 +25,47 @@
   tasks:
 
     #################################################################
-    # 1️⃣ GET TEMPLATE USING K8S (NO oc REQUIRED)
+    # 1️⃣ CALL OPENSHIFT TEMPLATE PROCESSOR API
     #################################################################
-    - name: Get OpenShift Template
-      kubernetes.core.k8s_info:
+    - name: Process template using Template Processor API
+      kubernetes.core.k8s:
         api_version: template.openshift.io/v1
         kind: Template
-        name: "{{ template_name }}"
         namespace: "{{ template_namespace }}"
-      register: tmpl
+        name: "{{ template_name }}"
+        state: present
+        apply: false
+        wait: false
+        definition:
+          apiVersion: template.openshift.io/v1
+          kind: Template
+          metadata:
+            name: "{{ template_name }}"
+            namespace: "{{ template_namespace }}"
+          parameters:
+            - name: NAME
+              value: "{{ app_name }}"
+            - name: NAMESPACE
+              value: "{{ runtime_namespace }}"
+            - name: HTTPD_VERSION
+              value: "{{ httpd_version }}"
+            - name: MEMORY_LIMIT
+              value: "{{ memory_limit }}"
+            - name: SOURCE_REPOSITORY_URL
+              value: "{{ git_repo_url }}"
+      register: processed
 
     #################################################################
-    # 2️⃣ RENDER TEMPLATE PARAMETERS
+    # 2️⃣ EXTRACT GENERATED OBJECTS
     #################################################################
-    - name: Render template parameters
+    - name: Extract objects from processed template
       set_fact:
-        apache_objects: >-
-          {{
-            tmpl.resources[0].objects
-            | to_yaml
-            | template({
-                'NAME': app_name,
-                'NAMESPACE': runtime_namespace,
-                'HTTPD_VERSION': httpd_version,
-                'MEMORY_LIMIT': memory_limit,
-                'SOURCE_REPOSITORY_URL': git_repo_url
-              })
-            | from_yaml_all
-            | list
-          }}
+        apache_objects: "{{ processed.result.objects }}"
 
     #################################################################
-    # 3️⃣ APPLY RENDERED RESOURCES
+    # 3️⃣ APPLY GENERATED OBJECTS
     #################################################################
-    - name: Apply rendered template objects
+    - name: Apply Apache objects
       kubernetes.core.k8s:
         state: present
         namespace: "{{ runtime_namespace }}"
@@ -66,7 +73,7 @@
       loop: "{{ apache_objects }}"
 
     #################################################################
-    # (Your NetworkPolicy, Ports, CIDR logic remains SAME)
+    # 4️⃣ REST OF YOUR LOGIC (NETWORKPOLICY)
     #################################################################
 
     - name: Init parsed port lists
