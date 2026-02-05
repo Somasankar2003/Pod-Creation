@@ -1,5 +1,5 @@
 ---
-- name: Deploy Apache HTTP Server via AAP (Survey + Strict NetworkPolicy)
+- name: Deploy Apache HTTPD on OpenShift using AAP
   hosts: localhost
   connection: local
   gather_facts: no
@@ -11,54 +11,62 @@
   tasks:
 
     ##########################################################################
-    # 1️⃣ Create authenticated Kubernetes/OpenShift API client
+    # 1️⃣ Extract API server + token from the kubeconfig provided by AAP
     ##########################################################################
-    - name: Load k8s client
-      kubernetes.core.k8s_client:
-      register: k8sapi
+    - name: Read kubeconfig
+      slurp:
+        src: "~/.kube/config"
+      register: kube_raw
+
+    - name: Parse kubeconfig
+      set_fact:
+        kubeconfig: "{{ kube_raw.content | b64decode | from_yaml }}"
+
+    - name: Extract cluster server URL
+      set_fact:
+        api_server: "{{ kubeconfig.clusters[0].cluster.server }}"
+
+    - name: Extract Bearer token
+      set_fact:
+        bearer_token: "{{ kubeconfig.users[0].user.token }}"
 
     ##########################################################################
-    # 2️⃣ PROCESS TEMPLATE VIA /processedtemplates ENDPOINT
+    # 2️⃣ Process OpenShift Template using processedtemplates API
     ##########################################################################
-    - name: Process OpenShift Template via API
+    - name: Process OpenShift Template
       uri:
-        url: "{{ k8sapi.config.host }}/apis/template.openshift.io/v1/namespaces/{{ template_namespace }}/processedtemplates"
+        url: "{{ api_server }}/apis/template.openshift.io/v1/namespaces/{{ template_namespace }}/processedtemplates"
         method: POST
         headers:
-          Authorization: "Bearer {{ k8sapi.config.api_key['authorization'] }}"
+          Authorization: "Bearer {{ bearer_token }}"
           Accept: "application/json"
           Content-Type: "application/json"
         body_format: json
         body:
-          kind: Template
           apiVersion: template.openshift.io/v1
+          kind: Template
           metadata:
             name: "{{ template_name }}"
           parameters:
-            - name: NAME
-              value: "{{ app_name }}"
-            - name: NAMESPACE
-              value: "{{ runtime_namespace }}"
-            - name: HTTPD_VERSION
-              value: "{{ httpd_version }}"
-            - name: MEMORY_LIMIT
-              value: "{{ memory_limit }}"
-            - name: SOURCE_REPOSITORY_URL
-              value: "{{ git_repo_url }}"
+            - { name: NAME, value: "{{ app_name }}" }
+            - { name: NAMESPACE, value: "{{ runtime_namespace }}" }
+            - { name: HTTPD_VERSION, value: "{{ httpd_version }}" }
+            - { name: MEMORY_LIMIT, value: "{{ memory_limit }}" }
+            - { name: SOURCE_REPOSITORY_URL, value: "{{ git_repo_url }}" }
         validate_certs: false
       register: processed
 
     ##########################################################################
-    # 3️⃣ EXTRACT PROCESSED OBJECTS
+    # 3️⃣ Extract objects
     ##########################################################################
-    - name: Extract Processed Objects
+    - name: Extract processed objects
       set_fact:
         apache_objects: "{{ processed.json.objects }}"
 
     ##########################################################################
-    # 4️⃣ APPLY THE GENERATED RESOURCES
+    # 4️⃣ Apply objects
     ##########################################################################
-    - name: Apply Apache Template Objects
+    - name: Apply template resources
       kubernetes.core.k8s:
         state: present
         namespace: "{{ runtime_namespace }}"
@@ -66,30 +74,29 @@
       loop: "{{ apache_objects }}"
 
     ##########################################################################
-    # 5️⃣ Now apply NetworkPolicy (Survey-controlled ports + CIDRs)
+    # 5️⃣ NETWORK POLICY BUILDING (your survey fields)
     ##########################################################################
 
-    - name: Initialize port lists
+    - name: Init port lists
       set_fact:
         ingress_ports_parsed: []
         egress_ports_parsed: []
 
-    - name: Build ingress ports list
+    - name: Build ingress ports
       set_fact:
         ingress_ports_parsed: "{{ ingress_ports_parsed +
-          [ {'protocol': item.split(':')[0] | upper, 'port': item.split(':')[1] | int } ] }}"
+          [ {'protocol': item.split(':')[0] | upper,
+             'port': item.split(':')[1] | int } ] }}"
       loop: "{{ ingress_ports.split(',') | map('trim') | list }}"
 
-    - name: Build egress ports list
+    - name: Build egress ports
       set_fact:
         egress_ports_parsed: "{{ egress_ports_parsed +
-          [ {'protocol': item.split(':')[0] | upper, 'port': item.split(':')[1] | int } ] }}"
+          [ {'protocol': item.split(':')[0] | upper,
+             'port': item.split(':')[1] | int } ] }}"
       loop: "{{ egress_ports.split(',') | map('trim') | list }}"
 
-    ##########################################################################
-    # CIDRs (Ingress + Egress)
-    ##########################################################################
-    - name: Initialize CIDR lists
+    - name: Init CIDR lists
       set_fact:
         ingress_from_blocks: []
         egress_to_blocks: []
@@ -120,39 +127,28 @@
             podSelector:
               matchLabels:
                 name: "{{ app_name }}"
-            policyTypes:
-              - Ingress
-              - Egress
-
+            policyTypes: [Ingress, Egress]
             ingress:
               - from: "{{ ingress_from_blocks }}"
                 ports: "{{ ingress_ports_parsed }}"
-
             egress:
-              # DNS service CIDR
               - to:
-                  - ipBlock:
-                      cidr: "{{ dns_service_cidr }}"
+                  - ipBlock: { cidr: "{{ dns_service_cidr }}" }
                 ports:
                   - { protocol: UDP, port: 53 }
                   - { protocol: TCP, port: 53 }
-
-              # Node local DNS IP
               - to:
-                  - ipBlock:
-                      cidr: "{{ dns_local_ip }}"
+                  - ipBlock: { cidr: "{{ dns_local_ip }}" }
                 ports:
                   - { protocol: UDP, port: 53 }
                   - { protocol: TCP, port: 53 }
-
-              # Allowed external CIDRs
               - to: "{{ egress_to_blocks }}"
                 ports: "{{ egress_ports_parsed }}"
 
     ##########################################################################
-    # 7️⃣ Restart Deployment to apply NetworkPolicy
+    # 7️⃣ Force pod restart
     ##########################################################################
-    - name: Force rollout restart
+    - name: Restart Deployment
       kubernetes.core.k8s:
         state: patched
         api_version: apps/v1
