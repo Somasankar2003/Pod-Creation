@@ -1,101 +1,90 @@
 ---
-- name: Deploy Apache HTTPD on OpenShift using AAP
+- name: Deploy Apache HTTP Server via AAP (Survey + Strict NetworkPolicy)
   hosts: localhost
   connection: local
   gather_facts: no
 
+  ############################################################
+  # SURVEY VARIABLES (PLAIN STRINGS)
+  ############################################################
   vars:
+    app_name: "{{ app_name }}"
+    runtime_namespace: "{{ runtime_namespace }}"
+    httpd_version: "{{ httpd_version }}"
+    memory_limit: "{{ memory_limit }}"
+    git_repo_url: "{{ git_repo_url }}"
+
+    # Survey-driven (CSV)
+    ingress_ports: "{{ ingress_ports }}"          # TCP:8080
+    ingress_cidrs: "{{ ingress_cidrs }}"          # 0.0.0.0/0 or internal CIDRs
+    egress_cidrs: "{{ egress_cidrs }}"            # allowed external CIDRs
+    egress_ports: "{{ egress_ports }}"            # TCP:443
+
+    # DNS (stable defaults, overridable)
+    dns_service_cidr: "{{ dns_service_cidr | default('172.30.0.0/16') }}"
+    dns_node_local_ip: "{{ dns_node_local_ip | default('169.254.0.5/32') }}"
+
+    # Fixed OpenShift values
     template_name: httpd-example
-    template_namespace: "{{ image_namespace }}"
+    template_namespace: openshift
+    app_port: 8080
+    route_host: "{{ app_name }}.apps.pgrhoso.dccloud.com"
 
   tasks:
 
-    ##########################################################################
-    # 1️⃣ Extract API server + token from the kubeconfig provided by AAP
-    ##########################################################################
-    - name: Read kubeconfig
-      slurp:
-        src: "~/.kube/config"
-      register: kube_raw
+    ############################################################
+    # 1️⃣ PROCESS APACHE TEMPLATE
+    ############################################################
+    - name: Process Apache HTTPD template
+      community.okd.openshift_process:
+        name: "{{ template_name }}"
+        namespace: "{{ template_namespace }}"
+        namespace_target: "{{ runtime_namespace }}"
+        parameters:
+          NAME: "{{ app_name }}"
+          NAMESPACE: "{{ template_namespace }}"
+          HTTPD_VERSION: "{{ httpd_version }}"
+          MEMORY_LIMIT: "{{ memory_limit }}"
+          SOURCE_REPOSITORY_URL: "{{ git_repo_url }}"
+      register: apache_template
 
-    - name: Parse kubeconfig
-      set_fact:
-        kubeconfig: "{{ kube_raw.content | b64decode | from_yaml }}"
-
-    - name: Extract cluster server URL
-      set_fact:
-        api_server: "{{ kubeconfig.clusters[0].cluster.server }}"
-
-    - name: Extract Bearer token
-      set_fact:
-        bearer_token: "{{ kubeconfig.users[0].user.token }}"
-
-    ##########################################################################
-    # 2️⃣ Process OpenShift Template using processedtemplates API
-    ##########################################################################
-    - name: Process OpenShift Template
-      uri:
-        url: "{{ api_server }}/apis/template.openshift.io/v1/namespaces/{{ template_namespace }}/processedtemplates"
-        method: POST
-        headers:
-          Authorization: "Bearer {{ bearer_token }}"
-          Accept: "application/json"
-          Content-Type: "application/json"
-        body_format: json
-        body:
-          apiVersion: template.openshift.io/v1
-          kind: Template
-          metadata:
-            name: "{{ template_name }}"
-          parameters:
-            - { name: NAME, value: "{{ app_name }}" }
-            - { name: NAMESPACE, value: "{{ runtime_namespace }}" }
-            - { name: HTTPD_VERSION, value: "{{ httpd_version }}" }
-            - { name: MEMORY_LIMIT, value: "{{ memory_limit }}" }
-            - { name: SOURCE_REPOSITORY_URL, value: "{{ git_repo_url }}" }
-        validate_certs: false
-      register: processed
-
-    ##########################################################################
-    # 3️⃣ Extract objects
-    ##########################################################################
-    - name: Extract processed objects
-      set_fact:
-        apache_objects: "{{ processed.json.objects }}"
-
-    ##########################################################################
-    # 4️⃣ Apply objects
-    ##########################################################################
-    - name: Apply template resources
-      kubernetes.core.k8s:
+    ############################################################
+    # 2️⃣ APPLY GENERATED RESOURCES
+    ############################################################
+    - name: Create application resources
+      community.okd.k8s:
         state: present
         namespace: "{{ runtime_namespace }}"
         definition: "{{ item }}"
-      loop: "{{ apache_objects }}"
+      loop: "{{ apache_template.resources }}"
 
-    ##########################################################################
-    # 5️⃣ NETWORK POLICY BUILDING (your survey fields)
-    ##########################################################################
-
-    - name: Init port lists
+    ############################################################
+    # 3️⃣ PARSE PORTS
+    ############################################################
+    - name: Init parsed port lists
       set_fact:
         ingress_ports_parsed: []
         egress_ports_parsed: []
 
     - name: Build ingress ports
       set_fact:
-        ingress_ports_parsed: "{{ ingress_ports_parsed +
-          [ {'protocol': item.split(':')[0] | upper,
-             'port': item.split(':')[1] | int } ] }}"
+        ingress_ports_parsed: >-
+          {{ ingress_ports_parsed +
+             [ {'protocol': item.split(':')[0] | upper,
+                'port': item.split(':')[1] | int } ] }}
       loop: "{{ ingress_ports.split(',') | map('trim') | list }}"
 
     - name: Build egress ports
       set_fact:
-        egress_ports_parsed: "{{ egress_ports_parsed +
-          [ {'protocol': item.split(':')[0] | upper,
-             'port': item.split(':')[1] | int } ] }}"
+        egress_ports_parsed: >-
+          {{ egress_ports_parsed +
+             [ {'protocol': item.split(':')[0] | upper,
+                'port': item.split(':')[1] | int } ] }}
       loop: "{{ egress_ports.split(',') | map('trim') | list }}"
 
+    ############################################################
+    # 4️⃣ PARSE CIDRs
+    ############################################################
     - name: Init CIDR lists
       set_fact:
         ingress_from_blocks: []
@@ -103,19 +92,23 @@
 
     - name: Build ingress CIDRs
       set_fact:
-        ingress_from_blocks: "{{ ingress_from_blocks + [ {'ipBlock': {'cidr': item}} ] }}"
+        ingress_from_blocks: >-
+          {{ ingress_from_blocks +
+             [ {'ipBlock': {'cidr': item}} ] }}
       loop: "{{ ingress_cidrs.split(',') | map('trim') | list }}"
 
     - name: Build egress CIDRs
       set_fact:
-        egress_to_blocks: "{{ egress_to_blocks + [ {'ipBlock': {'cidr': item}} ] }}"
+        egress_to_blocks: >-
+          {{ egress_to_blocks +
+             [ {'ipBlock': {'cidr': item}} ] }}
       loop: "{{ egress_cidrs.split(',') | map('trim') | list }}"
 
-    ##########################################################################
-    # 6️⃣ Apply NetworkPolicy
-    ##########################################################################
+    ############################################################
+    # 5️⃣ APPLY NETWORK POLICY
+    ############################################################
     - name: Apply NetworkPolicy
-      kubernetes.core.k8s:
+      community.okd.k8s:
         state: present
         namespace: "{{ runtime_namespace }}"
         definition:
@@ -127,38 +120,56 @@
             podSelector:
               matchLabels:
                 name: "{{ app_name }}"
-            policyTypes: [Ingress, Egress]
+            policyTypes:
+              - Ingress
+              - Egress
+
+            # INGRESS (CIDR BASED)
             ingress:
               - from: "{{ ingress_from_blocks }}"
                 ports: "{{ ingress_ports_parsed }}"
+
+            # EGRESS (STRICT)
             egress:
+              # DNS via service network
               - to:
-                  - ipBlock: { cidr: "{{ dns_service_cidr }}" }
+                  - ipBlock:
+                      cidr: "{{ dns_service_cidr }}"
                 ports:
-                  - { protocol: UDP, port: 53 }
-                  - { protocol: TCP, port: 53 }
+                  - protocol: UDP
+                    port: 53
+                  - protocol: TCP
+                    port: 53
+
+              # DNS via node-local cache
               - to:
-                  - ipBlock: { cidr: "{{ dns_local_ip }}" }
+                  - ipBlock:
+                      cidr: "{{ dns_node_local_ip }}"
                 ports:
-                  - { protocol: UDP, port: 53 }
-                  - { protocol: TCP, port: 53 }
+                  - protocol: UDP
+                    port: 53
+                  - protocol: TCP
+                    port: 53
+
+              # ONLY ALLOWED CIDRs
               - to: "{{ egress_to_blocks }}"
                 ports: "{{ egress_ports_parsed }}"
 
-    ##########################################################################
-    # 7️⃣ Force pod restart
-    ##########################################################################
-    - name: Restart Deployment
+    ############################################################
+    # 6️⃣ FORCE POD RESTART (FIXED)
+    ############################################################
+    - name: Force rollout restart (label-based, guaranteed)
       kubernetes.core.k8s:
         state: patched
         api_version: apps/v1
         kind: Deployment
-        name: "{{ app_name }}"
         namespace: "{{ runtime_namespace }}"
+        label_selectors:
+          - "name={{ app_name }}"
         merge_type: strategic-merge
         definition:
           spec:
             template:
               metadata:
                 annotations:
-                  restartedAt: "{{ lookup('pipe', 'date +%s') }}"
+                  restartedAt: "{{ lookup('pipe', 'date +%s%N') }}"
