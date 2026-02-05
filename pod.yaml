@@ -5,43 +5,35 @@
   gather_facts: no
 
   vars:
-    app_name: "{{ app_name }}"
-    runtime_namespace: "{{ runtime_namespace }}"
-    httpd_version: "{{ httpd_version }}"
-    memory_limit: "{{ memory_limit }}"
-    git_repo_url: "{{ git_repo_url }}"
-
-    ingress_ports: "{{ ingress_ports }}"
-    ingress_cidrs: "{{ ingress_cidrs }}"
-    egress_cidrs: "{{ egress_cidrs }}"
-    egress_ports: "{{ egress_ports }}"
-
-    dns_service_cidr: "{{ dns_service_cidr | default('172.30.0.0/16') }}"
-    dns_node_local_ip: "{{ dns_node_local_ip | default('169.254.0.5/32') }}"
-
     template_name: httpd-example
-    template_namespace: openshift
+    template_namespace: "{{ image_namespace }}"
 
   tasks:
 
-    #################################################################
-    # 1️⃣ CALL OPENSHIFT TEMPLATE PROCESSOR API
-    #################################################################
-    - name: Process template using Template Processor API
-      kubernetes.core.k8s:
-        api_version: template.openshift.io/v1
-        kind: Template
-        namespace: "{{ template_namespace }}"
-        name: "{{ template_name }}"
-        state: present
-        apply: false
-        wait: false
-        definition:
-          apiVersion: template.openshift.io/v1
+    ##########################################################################
+    # 1️⃣ Create authenticated Kubernetes/OpenShift API client
+    ##########################################################################
+    - name: Load k8s client
+      kubernetes.core.k8s_client:
+      register: k8sapi
+
+    ##########################################################################
+    # 2️⃣ PROCESS TEMPLATE VIA /processedtemplates ENDPOINT
+    ##########################################################################
+    - name: Process OpenShift Template via API
+      uri:
+        url: "{{ k8sapi.config.host }}/apis/template.openshift.io/v1/namespaces/{{ template_namespace }}/processedtemplates"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ k8sapi.config.api_key['authorization'] }}"
+          Accept: "application/json"
+          Content-Type: "application/json"
+        body_format: json
+        body:
           kind: Template
+          apiVersion: template.openshift.io/v1
           metadata:
             name: "{{ template_name }}"
-            namespace: "{{ template_namespace }}"
           parameters:
             - name: NAME
               value: "{{ app_name }}"
@@ -53,51 +45,51 @@
               value: "{{ memory_limit }}"
             - name: SOURCE_REPOSITORY_URL
               value: "{{ git_repo_url }}"
+        validate_certs: false
       register: processed
 
-    #################################################################
-    # 2️⃣ EXTRACT GENERATED OBJECTS
-    #################################################################
-    - name: Extract objects from processed template
+    ##########################################################################
+    # 3️⃣ EXTRACT PROCESSED OBJECTS
+    ##########################################################################
+    - name: Extract Processed Objects
       set_fact:
-        apache_objects: "{{ processed.result.objects }}"
+        apache_objects: "{{ processed.json.objects }}"
 
-    #################################################################
-    # 3️⃣ APPLY GENERATED OBJECTS
-    #################################################################
-    - name: Apply Apache objects
+    ##########################################################################
+    # 4️⃣ APPLY THE GENERATED RESOURCES
+    ##########################################################################
+    - name: Apply Apache Template Objects
       kubernetes.core.k8s:
         state: present
         namespace: "{{ runtime_namespace }}"
         definition: "{{ item }}"
       loop: "{{ apache_objects }}"
 
-    #################################################################
-    # 4️⃣ REST OF YOUR LOGIC (NETWORKPOLICY)
-    #################################################################
+    ##########################################################################
+    # 5️⃣ Now apply NetworkPolicy (Survey-controlled ports + CIDRs)
+    ##########################################################################
 
-    - name: Init parsed port lists
+    - name: Initialize port lists
       set_fact:
         ingress_ports_parsed: []
         egress_ports_parsed: []
 
-    - name: Build ingress ports
+    - name: Build ingress ports list
       set_fact:
-        ingress_ports_parsed: >-
-          {{ ingress_ports_parsed +
-             [ {'protocol': item.split(':')[0] | upper,
-                'port': item.split(':')[1] | int } ] }}
+        ingress_ports_parsed: "{{ ingress_ports_parsed +
+          [ {'protocol': item.split(':')[0] | upper, 'port': item.split(':')[1] | int } ] }}"
       loop: "{{ ingress_ports.split(',') | map('trim') | list }}"
 
-    - name: Build egress ports
+    - name: Build egress ports list
       set_fact:
-        egress_ports_parsed: >-
-          {{ egress_ports_parsed +
-             [ {'protocol': item.split(':')[0] | upper,
-                'port': item.split(':')[1] | int } ] }}
+        egress_ports_parsed: "{{ egress_ports_parsed +
+          [ {'protocol': item.split(':')[0] | upper, 'port': item.split(':')[1] | int } ] }}"
       loop: "{{ egress_ports.split(',') | map('trim') | list }}"
 
-    - name: Init CIDR lists
+    ##########################################################################
+    # CIDRs (Ingress + Egress)
+    ##########################################################################
+    - name: Initialize CIDR lists
       set_fact:
         ingress_from_blocks: []
         egress_to_blocks: []
@@ -112,6 +104,9 @@
         egress_to_blocks: "{{ egress_to_blocks + [ {'ipBlock': {'cidr': item}} ] }}"
       loop: "{{ egress_cidrs.split(',') | map('trim') | list }}"
 
+    ##########################################################################
+    # 6️⃣ Apply NetworkPolicy
+    ##########################################################################
     - name: Apply NetworkPolicy
       kubernetes.core.k8s:
         state: present
@@ -125,28 +120,38 @@
             podSelector:
               matchLabels:
                 name: "{{ app_name }}"
-            policyTypes: [Ingress, Egress]
+            policyTypes:
+              - Ingress
+              - Egress
+
             ingress:
               - from: "{{ ingress_from_blocks }}"
                 ports: "{{ ingress_ports_parsed }}"
+
             egress:
+              # DNS service CIDR
               - to:
-                  - ipBlock: { cidr: "{{ dns_service_cidr }}" }
+                  - ipBlock:
+                      cidr: "{{ dns_service_cidr }}"
                 ports:
-                  - protocol: UDP
-                    port: 53
-                  - protocol: TCP
-                    port: 53
+                  - { protocol: UDP, port: 53 }
+                  - { protocol: TCP, port: 53 }
+
+              # Node local DNS IP
               - to:
-                  - ipBlock: { cidr: "{{ dns_node_local_ip }}" }
+                  - ipBlock:
+                      cidr: "{{ dns_local_ip }}"
                 ports:
-                  - protocol: UDP
-                    port: 53
-                  - protocol: TCP
-                    port: 53
+                  - { protocol: UDP, port: 53 }
+                  - { protocol: TCP, port: 53 }
+
+              # Allowed external CIDRs
               - to: "{{ egress_to_blocks }}"
                 ports: "{{ egress_ports_parsed }}"
 
+    ##########################################################################
+    # 7️⃣ Restart Deployment to apply NetworkPolicy
+    ##########################################################################
     - name: Force rollout restart
       kubernetes.core.k8s:
         state: patched
